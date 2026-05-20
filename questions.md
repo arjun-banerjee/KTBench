@@ -1,124 +1,162 @@
 # KTBench — Open Design Questions
 
-These are unresolved decisions that need answers before implementation begins.
-Questions are grouped by component and roughly ordered by blocking dependency.
+Resolved decisions are marked ✅. Still-open questions are marked ❓. New questions surfaced by the answers are marked 🆕.
+
+---
+
+## 0. Metrics
+
+**Q0.0 ✅ — Port KernelBench's extended metric set**
+KTBench should carry all metrics from KernelBench's `KernelExecResult`, mapped to the translation context:
+
+| Metric group | Fields | Notes in translation context |
+|---|---|---|
+| Correctness | `compiled`, `correctness`, `correctness_trials` | Fraction of structured cases passing |
+| Timing | `runtime`, `runtime_stats` | Candidate on target HW |
+| Reference timing | `ref_runtime`, `ref_runtime_stats` | Handwritten reference in tgt_dsl on target HW |
+| Speedup vs. reference | `speedup_vs_ref` | candidate runtime / handwritten reference runtime |
+| Source timing | `source_runtime`, `source_runtime_stats`, `source_backend` | Source kernel on source HW (pre-stored in meta.toml) |
+| Numerical precision | `max_abs_error`, `mean_abs_error`, `max_rel_error`, `mean_rel_error` | Per correctness trial, aggregated |
+| Memory efficiency | `peak_memory_bytes`, `ref_peak_memory_bytes`, `memory_ratio` | Candidate vs. handwritten reference |
+| Kernel launch / fusion | `num_kernels`, `ref_num_kernels`, `fusion_ratio`, `kernel_breakdown` | |
+| SOL score | `sol_score`, `arithmetic_intensity`, `achieved_bandwidth_gbps`, `achieved_gflops`, `bottleneck` | Grounded in target HW ceiling |
+| Energy efficiency | `energy_mj`, `ref_energy_mj`, `energy_ratio`, `avg_power_w` | |
+| Roofline / occupancy | `roofline_efficiency`, `occupancy_pct`, `memory_throughput_pct`, `compute_throughput_pct` | |
+| Anti-hack flags | `excessive_speedup`, `suspected_noop`, `static_exploit` | Gate on utilization floor |
+| Stress robustness | `stress_pass_rate` | Fraction of randomized stress trials passing |
 
 ---
 
 ## 1. Problem Format & Test Suite
 
-**Q1.1 — Who authors the structured correctness cases?**
-The test_suite.toml includes curated cases (small/large/nonpow2/degenerate). These need to be written by a human or generated and validated for each problem. What is the authoring workflow — manual curation, auto-generation with human review, or something else?
+**Q1.1 ✅ — Who authors the structured correctness cases?**
+Auto-generation with human review. Each problem includes a generator; humans curate/approve categories (small, large, non-power-of-two, degenerate, boundary-aligned, adversarial).
 
-**Q1.2 — Should the structured cases be public or held-out?**
-If the test cases are visible to the model (e.g., it can read `test_suite.toml`), it can still hardcode for those specific shapes. Options:
-- (a) Structured cases are fully public; only stress cases are hidden → simpler but still gameable on structured cases
-- (b) Structured cases are held-out at eval time, only shape descriptions in prompt → stronger anti-hack
-- (c) Structured cases are public but stress cases are generated server-side per-run → leaderboard-only protection
+**Q1.2 ❓ — Sandbox to prevent reading test_suite.toml**
+The container-per-eval (Q3.2) handles filesystem isolation if oracle tensors and test shapes are not mounted into the candidate container. But:
 
-**Q1.3 — How is the oracle executed when source and target HW differ?**
-For e.g. H100 → MI300, the oracle must run on one of them. Options:
-- (a) Pre-run oracle at dataset-build time on source HW, store output tensors alongside test cases → eval machine only needs target HW
-- (b) Run oracle live on source HW during eval → requires both HWs simultaneously, complex infra
-- (c) PyTorch eager always used as oracle → simpler but may not match source kernel numerics for low-precision ops
+🆕 **Q1.2a — Where do oracle tensors live relative to the eval container?**
+If the grader runs in the host process and the candidate runs in the container, the grader can pass oracle tensors as tensors over a socket/pipe — the candidate never sees the file. Is this the intended architecture, or should the grader itself run in the container with oracle tensors injected at launch?
 
-Which is the right default? Pre-storing (a) seems right for most cases, but raises the question of how oracle tensors are versioned and validated.
+🆕 **Q1.2b — Can the candidate recover shapes from output buffer allocations?**
+The grader allocates output buffers of the correct shape and passes them to `ModelNew.forward()`. The candidate can call `.shape` on those buffers. Does this leak the test case shapes? Options:
+- (a) Pass shapes explicitly as forward() arguments (they're already implicitly in the input tensors anyway) — accept this is visible
+- (b) Use opaque buffers (not standard PyTorch tensors) — complex, breaks DSL interop
+- (c) Accept that individual case shapes are visible during the run; the anti-hardcoding protection comes from having many diverse cases + stress cases that are never mounted
 
-**Q1.4 — Oracle tensor storage format?**
-If pre-storing oracle tensors: safetensors? pickle? npy? Per-case or batched? How large can this get for a problem with 10 cases × large tensors (e.g., 8192-length sequences)?
+**Q1.3 ✅ — Oracle execution strategy**
+Pre-run at dataset-build time on source HW. Store output tensors. Version by: source kernel commit, framework version, dtype policy, seed, hardware ID.
+
+**Q1.4 ✅ — Oracle tensor storage**
+safetensors, one file per case (or per problem if small). Metadata: shape, dtype, seed, tolerance, source HW, SW versions, checksum.
+
+🆕 **Q1.5 — Who stores the handwritten reference kernel and when is it run?**
+The new scoring model (Q4.1) compares the candidate against a handwritten reference implementation in the target DSL. Questions:
+- Is the handwritten reference stored in the problem directory (`reference_tgt.py`)?
+- Is it public (visible to models in the prompt)? If yes, models can copy it — is that acceptable if they get the right answer?
+- Is its timing pre-stored in meta.toml, or re-run live at eval time on target HW?
+- Who writes it — problem authors, or is it auto-generated (e.g., Triton from torch.compile for CUDA→Triton problems)?
 
 ---
 
 ## 2. Correctness Check Design
 
-**Q2.1 — What does "diverse kernels in correctness check" mean precisely?**
-The current plan has each structured case call `model.forward(*case_inputs)` once. But some kernels have multiple callable entry points or modes (e.g., paged attention has `paged_attention_v1` and `paged_attention_v2`). Should the test suite be able to call different entry points per case, or is the `ModelNew.forward()` interface always the single entry point?
+**Q2.1 ✅ — Entry point interface**
+Single-entry `ModelNew.forward()`. Diversity comes from cases exercising different shapes, dtypes, masks, layouts, modes. Multi-entry kernels wrapped behind `forward()`.
 
-**Q2.2 — Should the model be able to expose multiple kernels / functions?**
-Related to Q2.1: some GPU libraries expose a family of kernels (e.g., different tile sizes, different precisions) under one wrapper that dispatches. Should `ModelNew` be allowed to have helper methods, or must everything go through `forward()`? This affects both the prompt design and what the static checker needs to inspect.
+**Q2.2 ✅ — Helper methods**
+Allowed internally. Only `forward()` is called by the grader. Static checker inspects the whole file.
 
-**Q2.3 — Tolerance policy for cross-hardware correctness?**
-fp16 and bf16 arithmetic may differ between NVIDIA and AMD due to different rounding, fused ops, etc. A strict `allclose(atol=1e-2)` may reject legitimate correct translations. Options:
-- (a) Per-dtype tolerances (same as KernelBench: fp32=1e-4, fp16/bf16=1e-2)
-- (b) Per-problem tolerances declared in `meta.toml` (more flexible, more work)
-- (c) Relative-only tolerance with a generous rtol (handles scale-dependent ops)
-What level of cross-vendor numerical divergence is acceptable?
+**Q2.3 ✅ — Tolerance policy**
+Per-problem in `meta.toml`, with dtype defaults (fp32: rtol=atol=1e-4; fp16/bf16: rtol=atol=1e-2). Reductions/attention/low-precision can override.
 
-**Q2.4 — How to handle kernels with non-deterministic outputs?**
-Some kernels (e.g., dropout, sampling) are stochastic. The oracle stores an expected distribution, not a fixed output. Options:
-- (a) Exclude stochastic kernels from the benchmark (simplest)
-- (b) Fix RNG seeds and require bit-exact match within tolerance (works if both HWs implement same RNG)
-- (c) Statistical correctness (mean/variance comparison) — much more complex
+**Q2.4 ✅ — Stochastic kernels**
+Excluded from v1.
+
+🆕 **Q2.5 — How are causal masks / attention biases handled in the test suite?**
+Some kernels (attention, paged attention) require auxiliary inputs like causal masks, key padding masks, or block tables. These are part of `forward()` arguments. Should these be included in test case inputs in `test_suite.toml` as fixed tensors, or generated by the grader at eval time from the case metadata?
+
+🆕 **Q2.6 — What is the "correctness" definition for kernels that are numerically sensitive by design?**
+Some kernels (e.g., online softmax, two-pass reductions) have intermediate accumulation strategies that legitimately produce results slightly outside standard fp16 tolerance when implemented differently (e.g., using f32 accumulation vs bf16). Is tolerance in `meta.toml` the full answer, or do we need a higher-level "functionally equivalent" correctness check (e.g., perplexity equivalence for attention)?
 
 ---
 
 ## 3. Eval Infrastructure
 
-**Q3.1 — Where does eval actually run?**
-Options:
-- (a) Modal (current KernelBench approach) — cloud GPU on-demand
-- (b) Local cluster / SLURM
-- (c) Both, with a hardware-aware dispatcher that routes to correct HW vendor
-For cross-vendor problems (NVIDIA → AMD), jobs must be dispatched to different machines. Is there existing infra for this, or does it need to be built?
+**Q3.1 ✅ — Eval runtime**
+Hardware-aware dispatcher abstraction. v1 supports Modal + local/SLURM. No hard-coded cloud provider.
 
-**Q3.2 — Subprocess isolation: how deep?**
-The plan calls for running candidate eval in a subprocess to block grader access. How isolated should it be?
-- (a) `subprocess.Popen` with restricted environment (easy, blocks most exploits)
-- (b) Docker/container per eval (stronger, higher overhead)
-- (c) seccomp/namespace isolation (strongest, complex)
-Given the pkill and stack-introspection attacks seen in KernelBench, is (a) sufficient?
+🆕 **Q3.1a — How is the dispatcher configured per-problem?**
+Each problem specifies `tgt_hw`. The dispatcher must map `tgt_hw` → available machine pool. Is this a config file (`configs/hw_map.toml`) that operators fill in for their cluster, or is it expected that the benchmark ships a default Modal mapping for common HW?
 
-**Q3.3 — How is compilation cached across eval runs?**
-KernelBench uses `torch_extensions` build directories. For a translation benchmark with many DSLs, compiled artifacts can be large. Is there a plan for a shared compilation cache, or does each eval run compile from scratch?
+**Q3.2 ✅ — Subprocess isolation**
+Container-per-eval for official leaderboard runs.
+
+🆕 **Q3.2a — GPU passthrough in container for multi-vendor HW**
+NVIDIA containers need `nvidia-docker` / `--gpus` flags; AMD containers need ROCm runtime. Does the eval harness manage container launching, or is this expected to be configured externally (e.g., by a SLURM job template or Modal image)?
+
+**Q3.3 ✅ — Compilation cache**
+Content-addressed, keyed by: submission hash, problem ID, target backend, compiler version (CUDA/HIP/Triton), hardware arch. No shared writable state across users.
+
+🆕 **Q3.4 — How is the agentic multi-turn toolset imported from the KernelBench repo?**
+Q6.3 answer says to take tooling from the KernelBench repo in `abaner`. Should KTBench vendor a copy, depend on it as a package, or import via a git submodule? And which specific pieces: the agent runner, sweep scripts, timing utilities, or everything under `src/kernelbench/`?
 
 ---
 
 ## 4. Scoring & Metrics
 
-**Q4.1 — How is SOL_src_equiv computed?**
-The translation efficiency score requires knowing how efficiently the source kernel runs on source HW. Options:
-- (a) Pre-compute and store in `meta.toml` at dataset-build time → immutable, simple
-- (b) Re-run source kernel on source HW at eval time → requires source HW present
-- (c) Use a hardware-normalized estimate (FLOP count / HW peak) → avoids needing source HW but less accurate
+**Q4.1 ✅ — Performance baseline is handwritten reference in target language**
+Candidate is compared against a handwritten (or best-known) reference implementation in the target DSL on the target HW — not against the source kernel. See Q1.5 for open questions about who provides it.
 
-**Q4.2 — What happens to the score when source HW is not available at eval time?**
-If a submission is evaluated on a cluster that only has the target HW (e.g., AMD), can we still compute SOL_tgt / SOL_src_equiv? Pre-storing SOL_src in meta.toml (option a above) decouples this.
+**Q4.2 ✅ — N/A** (decoupled by pre-storing)
 
-**Q4.3 — Is there a separate correctness-only leaderboard?**
-For models that produce correct but slow translations, a correctness-only metric is still meaningful. Should the benchmark report correctness and SOL separately on the leaderboard, or only the combined score?
+**Q4.3 ✅ — Separate leaderboards**
+Yes: correctness-only + all individual metrics displayed separately. Primary ranking TBD.
 
-**Q4.4 — How to handle problems where the target HW can legitimately beat the source HW?**
-e.g., H100 → H200: the translation may be trivially correct and faster because H200 has 4800 GB/s vs H100's 3350 GB/s. The SOL_tgt / SOL_src_equiv ratio may be > 1 not due to better translation but just better hardware. Is capping at 2.0 the right normalization, or should we normalize by the HW bandwidth ratio?
+🆕 **Q4.3a — What is the primary ranking metric on the leaderboard?**
+Candidates: (a) SOL fraction on target HW, (b) speedup vs. handwritten reference, (c) correctness × stress_pass_rate × SOL, (d) separate correctness and perf rankings. The composite metric from the plan was `correctness × stress_robustness × SOL_tgt/SOL_ref` — is this still right given the new baseline?
+
+**Q4.4 ✅ — Cross-HW performance comparison**
+Compare to handwritten reference in target language, not to source HW. Hardware capability differences are absorbed into the reference baseline.
+
+🆕 **Q4.5 — How is energy measurement handled for AMD/NKI HW?**
+KernelBench's `measure_energy` uses NVML (NVIDIA only). For AMD (ROCm) and AWS Trainium, different APIs are needed (rocm-smi, neuron-monitor). Should energy be HW-conditional (measured when available, skipped otherwise), or mandatory for all targets?
 
 ---
 
 ## 5. Problem Sourcing & Coverage
 
-**Q5.1 — Which translation axes should be in v1?**
-Candidate axes ranked by feasibility and interest:
-1. CUDA (H100) → HIP (MI300) — highest practical demand
-2. CUDA (H100) → Triton — many existing Triton sources to compare against
-3. Triton (A100) → CUDA (H100) — reverse direction, tests understanding of Triton idioms
-4. CUDA (H100) → NKI (Trainium2) — novel, harder to evaluate without Trainium HW
-5. CUDA (H100) → Pallas (TPU) — interesting but TPU eval infra is complex
-Which axes should be in v1 vs. deferred?
+**Q5.1 ✅ — All axes in scope**
+All translation axes supported from v1: CUDA↔HIP, CUDA↔Triton, Triton↔CUDA, CUDA→NKI, CUDA→Pallas, and dtype/layout conversions within the same HW.
 
-**Q5.2 — Should the source kernel be the full `.cu` file or a ModelNew wrapper?**
-For production kernels (flash_attn2, vLLM paged_attn), the source is a large multi-file CUDA project. Should the problem normalize this into a single ModelNew-style file, or should the model be given the raw source files? The former is more tractable for eval; the latter is more realistic.
+🆕 **Q5.1a — How many problems per axis in v1?**
+"50 problems across 5+ axes" was the plan target. Is the distribution meant to be uniform (10 per axis) or weighted by practical demand (e.g., more CUDA→HIP and CUDA→Triton)?
 
-**Q5.3 — How do we validate that the source kernel is itself correct?**
-If we seed problems from production kernels, we assume they are correct. But for custom-authored source kernels, how do we validate the source before including it? Run against PyTorch eager? Have a human review?
+**Q5.2 ✅ — Source kernel format**
+Allow PyTorch, CUDA, or any supported DSL as source. Problem directory format should be flexible on `src_dsl`.
+
+🆕 **Q5.2a — How is a PyTorch source kernel normalized for prompting?**
+A raw PyTorch `nn.Module` is already in the ModelNew-compatible format. A raw `.cu` file is not. Is there a normalization step (`add_problem.py`) that wraps raw CUDA files into a `ModelNew`-style Python module, or is the raw `.cu` passed directly to the model?
+
+**Q5.3 ✅ — Source kernel validation**
+Requires passing a validation suite against a trusted reference (PyTorch eager or known production impl). Custom kernels require human review + oracle-generation checks.
 
 ---
 
 ## 6. Prompt Design
 
-**Q6.1 — What exactly is in the prompt?**
-Proposed: source kernel code + target DSL/HW description + ModelNew interface signature. NOT in prompt: input shapes, test case details, oracle outputs.
-Is this the right information budget? Too much context → model can exploit structure; too little → unfair for hard translation tasks.
+**Q6.1 ✅ — Prompt contents**
+Include: source code, target backend/HW, interface signature, dtype/layout assumptions, semantic description, allowed libraries.
+Exclude: exact hidden test shapes, oracle outputs, stress cases, scoring internals.
 
-**Q6.2 — Should the prompt include hardware spec sheets?**
-e.g., "MI300X has 192 GB HBM3, 5.3 TB/s bandwidth, 304 CUs, 1307 TFLOP/s FP16." This is useful context for hardware-aware translation but also gives away performance targets. Include or exclude?
+🆕 **Q6.1a — Is the handwritten reference kernel (Q1.5) included in the prompt?**
+If it exists and is public, it dramatically helps the model. Is this intentional (the task is adaptation/optimization, not blank-sheet translation), or should it be withheld to keep the task harder?
 
-**Q6.3 — Multi-turn vs. single-turn?**
-KernelBench supports agentic multi-turn (agent can run code, observe errors, iterate). Should KTBench also support this? Multi-turn is more realistic but makes eval more expensive and introduces new reward hacking surfaces (agent can observe intermediate timing outputs).
+**Q6.2 ✅ — Hardware summary in prompt**
+Short summary: memory hierarchy, wavefront/warp size, approximate bandwidth/FLOPs, backend constraints. No per-problem performance targets.
+
+**Q6.3 ✅ — Multi-turn support**
+Both single-turn (clean capability comparison) and multi-turn agentic (realistic engineering, stronger sandboxing, hidden tests). Separate leaderboards. Tooling ported from KernelBench repo.
+
+🆕 **Q6.4 — In multi-turn mode, can the agent observe timing outputs?**
+If the agent can run the kernel and observe runtime, it can binary-search over tile sizes / launch configurations. This is realistic engineering behavior but creates a new reward hacking surface (agent can probe the grader indirectly). Should timing feedback be available to the agent, and if so, should it be the real eval timing or a sandboxed proxy?

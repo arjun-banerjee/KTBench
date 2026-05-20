@@ -33,6 +33,7 @@ KTBench/
 │       ├── meta.toml              # translation axis, tags, difficulty, provenance
 │       ├── source.py              # kernel to translate (ModelNew-style, src_dsl)
 │       ├── oracle.py              # ground truth (PyTorch or canonical reference impl)
+│       ├── reference_tgt.py       # handwritten reference in tgt_dsl — performance baseline
 │       ├── test_suite.toml        # structured correctness test cases (see below)
 │       └── notes.md               # human description, gotchas, expected difficulty
 │
@@ -84,7 +85,11 @@ The kernel the model must translate. Follows the `ModelNew` interface (same as K
 
 ### `oracle.py`
 
-A numerically correct reference implementation (usually PyTorch eager or a well-validated CUDA kernel). The oracle is executed at dataset-build time (`build_oracle_tensors.py`) on a reference machine, and outputs are stored as tensors alongside each test case in `test_suite.toml`. During live eval, the candidate's outputs are compared against these stored tensors — the oracle does not need to be present on the eval machine.
+A numerically correct reference implementation (usually PyTorch eager or a well-validated CUDA kernel). The oracle is executed at dataset-build time (`build_oracle_tensors.py`) on source HW, and outputs are stored as safetensors files (one per test case) alongside the problem. During live eval, the candidate's outputs are compared against these stored tensors — the oracle does not need to be present on the eval machine. Tensors are versioned by: source kernel commit, framework version, dtype policy, seed, and source HW ID.
+
+### `reference_tgt.py`
+
+A handwritten (or best-known) implementation in the **target DSL** on target HW. This is the performance baseline — the candidate is scored relative to how well this implementation uses the target hardware. May be auto-generated (e.g., Triton from torch.compile for CUDA→Triton problems) and then hand-tuned. Its timing is measured live at eval time on target HW.
 
 ### `test_suite.toml`
 
@@ -174,12 +179,14 @@ candidate_src (tgt_dsl)
         │  ✗ → stress_fail  (correctness credited, perf blocked)
         ▼
 [6] Performance timing (performance.py)
-        │  - CUDA/HIP event timing, N=20 warm trials
-        │  - SOL fraction = achieved_FLOP_or_BW / hw_peak
-        │  - also records: occupancy, kernel launch count, memory efficiency
+        │  - Time candidate AND handwritten reference_tgt.py on same target HW
+        │  - CUDA/HIP event timing, N=20 warm trials each
+        │  - SOL fraction = achieved_FLOP_or_BW / hw_peak (physics ceiling)
+        │  - also records: occupancy, kernel launches, memory, energy (NVML)
         ▼
 [7] Final score
-        correctness_score × stress_robustness × (SOL_tgt / SOL_src_equiv)
+        correctness_rate × stress_pass_rate × SOL_tgt
+        (speedup_vs_ref displayed separately; not part of the gated score)
 ```
 
 ---
@@ -198,23 +205,61 @@ candidate_src (tgt_dsl)
 
 ---
 
+## Metrics
+
+Full metric set (ported from KernelBench extended metrics, mapped to the translation context). The `ref_` fields always refer to the **handwritten reference in tgt_dsl** timed on the same target HW as the candidate — there is no source-kernel comparison in the score.
+
+| Metric group | Fields | Notes |
+|---|---|---|
+| Correctness | `compiled`, `correctness`, `correctness_trials` | Fraction of structured cases passing (all-or-nothing gate for perf) |
+| Stress robustness | `stress_pass_rate` | Fraction of randomized stress trials passing (≥90% gate for perf) |
+| Candidate timing | `runtime`, `runtime_stats` | Mean ± std over N=20 warm trials on target HW |
+| Reference timing | `ref_runtime`, `ref_runtime_stats` | Handwritten `reference_tgt.py` timed on same target HW, same trial count |
+| Speedup vs. reference | `speedup_vs_ref` | `ref_runtime / runtime` — >1 means candidate beats the handwritten reference |
+| Numerical precision | `max_abs_error`, `mean_abs_error`, `max_rel_error`, `mean_rel_error` | Aggregated across all correctness trials |
+| Memory efficiency | `peak_memory_bytes`, `ref_peak_memory_bytes`, `memory_ratio` | Candidate vs. handwritten reference; lower ratio = more memory efficient |
+| Kernel launch / fusion | `num_kernels`, `ref_num_kernels`, `fusion_ratio`, `kernel_breakdown` | Fewer launches with same output = better fusion |
+| SOL score | `sol_score`, `arithmetic_intensity`, `achieved_bandwidth_gbps`, `achieved_gflops`, `bottleneck` | `achieved / hw_peak`; identifies compute- vs. memory-bound |
+| Energy efficiency | `energy_mj`, `ref_energy_mj`, `energy_ratio`, `avg_power_w` | NVML on NVIDIA, skipped otherwise |
+| Roofline / occupancy | `roofline_efficiency`, `occupancy_pct`, `memory_throughput_pct`, `compute_throughput_pct` | From Nsight profiling with heuristic fallback |
+| Anti-hack flags | `excessive_speedup`, `suspected_noop`, `static_exploit` | Any flag blocks the perf score; logged for audit |
+
+---
+
 ## Scoring
 
-Three components, all normalized to [0, 1]:
+Performance is measured entirely on the **target hardware**, relative to the handwritten `reference_tgt.py` in the same target DSL. There is no comparison to the source kernel or source hardware.
 
-**Correctness** = fraction of structured cases passing (binary per-case)
+### Gates (must pass both to receive a performance score)
+1. **Correctness gate** — candidate must pass all structured test cases (correctness_rate = 1.0)
+2. **Stress gate** — candidate must pass ≥90% of randomized stress trials (stress_pass_rate ≥ 0.9)
+3. **Utilization gate** — SOL_compute > 2% OR SOL_dram > 2%; blocks suspected no-ops
 
-**Stress robustness** = fraction of stress trials passing
+### Final score (for ranking)
 
-**Translation efficiency** = `SOL_tgt / SOL_src_equiv`
-- `SOL_tgt`: SOL fraction the candidate achieves on target HW
-- `SOL_src_equiv`: SOL fraction the source kernel achieves on source HW for the same logical operation
-- Ratio > 1.0 means the translation is actually more efficient than the source (legitimate — e.g. H100 vs MI300 architectures differ)
-- Ratio is capped at 2.0 to prevent gaming by choosing a source with extremely low SOL
+```
+final_score = correctness_rate × stress_pass_rate × SOL_tgt
+```
 
-**Final score** = `correctness × stress_robustness × min(translation_efficiency, 2.0) / 2.0`
+- `correctness_rate` ∈ {0, 1} — all-or-nothing on structured cases
+- `stress_pass_rate` ∈ [0, 1] — continuous; acts as a robustness weight
+- `SOL_tgt` ∈ [0, 1] — fraction of target HW's theoretical throughput ceiling achieved; bounded by physics, not gameable
 
-Performance score is only recorded if the utilization gate passes. This means a no-op kernel that passes structured tests receives `correctness=1, stress=0, SOL=0` — not a high score.
+A no-op kernel that passes structured tests scores `1 × 0 × 0 = 0`. A correct, robust, hardware-saturating kernel scores close to 1.
+
+### Leaderboard columns (all displayed separately)
+| Column | Description |
+|---|---|
+| `correctness_rate` | Fraction of structured cases passing |
+| `stress_pass_rate` | Fraction of stress trials passing |
+| `sol_score` | SOL fraction on target HW (the primary perf signal) |
+| `speedup_vs_ref` | `ref_runtime / runtime` vs. handwritten reference — context, not gated |
+| `occupancy_pct` | GPU occupancy % |
+| `memory_ratio` | Peak memory vs. handwritten reference |
+| `fusion_ratio` | Kernel launch count vs. handwritten reference |
+| `energy_ratio` | Energy vs. handwritten reference (NVIDIA only) |
+| **`final_score`** | `correctness × stress × SOL` — primary ranking key |
+
 
 ---
 
@@ -235,17 +280,31 @@ Performance score is only recorded if the utilization gate passes. This means a 
 
 ---
 
-## Hardware Registry (initial set)
+## Hardware Registry
+
+### Official Eval Fleet
+
+These are the machines used for official leaderboard evaluation:
+
+| HW key | Count | Vendor | FP16 TFLOP/s | DRAM BW GB/s | Notes |
+|---|---|---|---|---|---|
+| `nvidia_h200_sxm` | up to 8 | nvidia | 989 | 4800 | GH100 die, HBM3e — primary eval target |
+| `nvidia_a100_sxm` | up to 2 | nvidia | 312 | 2000 | SXM4 — secondary / cross-gen problems |
+| `aws_trainium2` | TBD | aws | ~832 | ~820 | NKI only; availability TBD |
+
+The H200 is the primary eval target. Multi-GPU problems use up to 8× H200 in a single node (NVLink). The A100 is used for problems that specifically target Ampere-era optimizations (e.g., async copy, TF32). Trainium is used for NKI problems when hardware is available.
+
+### Extended Registry (for problem authoring; not all available in eval fleet)
 
 | HW key | Vendor | FP16 TFLOP/s | DRAM BW GB/s | Notes |
 |---|---|---|---|---|
-| `nvidia_h100_sxm` | nvidia | 989 | 3350 | SXM5, Tensor Core |
-| `nvidia_a100_sxm` | nvidia | 312 | 2000 | SXM4 |
-| `nvidia_h200` | nvidia | 989 | 4800 | |
-| `amd_mi300x` | amd | 1307 | 5300 | |
-| `amd_mi250x` | amd | 383 | 3277 | |
-| `aws_trainium2` | aws | ~830 | ~820 | NKI only |
-| `google_tpuv4` | google | ~275 | ~300 | Pallas only |
+| `nvidia_h100_sxm` | nvidia | 989 | 3350 | SXM5; similar compute to H200, less bandwidth |
+| `nvidia_a100_sxm` | nvidia | 312 | 2000 | In fleet |
+| `nvidia_h200_sxm` | nvidia | 989 | 4800 | In fleet |
+| `amd_mi300x` | amd | 1307 | 5300 | Not in fleet; problems supported, eval requires external HW |
+| `amd_mi250x` | amd | 383 | 3277 | Not in fleet |
+| `aws_trainium2` | aws | ~832 | ~820 | Fleet availability TBD |
+| `google_tpuv4` | google | ~275 | ~300 | Not in fleet; Pallas problems deferred |
 
 ---
 
