@@ -22,7 +22,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -170,6 +170,39 @@ def _load_generator(problem_dir: Path) -> GeneratorFn:
     return module.make_inputs
 
 
+FlopsFn = Callable[..., float]
+
+
+def _load_perf(problem_dir: Path) -> Optional[FlopsFn]:
+    """Load an optional perf.py from the problem directory.
+
+    perf.py must define ``flops(shapes, dtype) -> float`` returning the
+    number of floating-point operations the op performs on inputs of
+    the given shape and dtype. The convention is standard SOL counting:
+    add / sub / mul / div / cmp = 1 flop each; FMA = 2 flops (counted
+    as separate mul + add); transcendentals (exp / log / rsqrt / sqrt /
+    sigmoid / tanh) = 1 flop each; a reduction over N elements = N
+    flops. Element-wise op over a tensor of shape S = prod(S) flops.
+
+    When perf.py is absent the eval still computes ``memory_util`` from
+    input + output byte counts and reports ``compute_util = -1``. Add
+    a perf.py whenever ``sol = max(compute_util, memory_util)`` should
+    reflect the compute axis (gemm, attention without tile-flash
+    tricks, anything matmul-shaped at high arithmetic intensity).
+    """
+    perf_path = problem_dir / "perf.py"
+    if not perf_path.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location("_ktbench_perf", perf_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "flops"):
+        return None
+    return module.flops
+
+
 # ── Problem ───────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -178,6 +211,7 @@ class Problem:
     test_suite: TestSuite
     make_inputs: GeneratorFn    # make_inputs(shapes, dtype, rng, device) -> list[Tensor]
     problem_dir: Path
+    flops_fn: Optional[FlopsFn] = None  # optional perf.py::flops(shapes, dtype) -> float
 
     # Source text (loaded lazily)
     _source_src: str | None = field(default=None, repr=False)
@@ -221,4 +255,11 @@ def load_problem(problem_dir: str | Path) -> Problem:
     meta = _load_meta(d / "meta.toml")
     suite = _load_test_suite(d / "test_suite.toml")
     gen = _load_generator(d)
-    return Problem(meta=meta, test_suite=suite, make_inputs=gen, problem_dir=d)
+    flops_fn = _load_perf(d)
+    return Problem(
+        meta=meta,
+        test_suite=suite,
+        make_inputs=gen,
+        problem_dir=d,
+        flops_fn=flops_fn,
+    )

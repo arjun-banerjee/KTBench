@@ -16,7 +16,13 @@ num_trials       = 30
 pass_threshold   = 0.90             # fraction of stress trials that must pass for perf credit
 
 [antihack]
-utilization_floor_pct = 2.0         # SOL_compute OR SOL_dram must exceed this; blocks suspected no-ops
+# Floor for the no-op detector: a real kernel always moves at least some
+# bytes through DRAM, so even tiny inputs land at >= ~0.05% memory_util.
+# A literal no-op (return without touching memory) measures < 0.001%.
+# 0.05 is well below any legitimate kernel and well above the noise
+# floor of a return-immediately stub. The earlier 2.0 was too aggressive
+# and zeroed correct fast kernels on small inputs.
+utilization_floor_pct = 0.05
 excessive_speedup_vs_ref = 50.0     # flag if candidate is >50x faster than reference_tgt
 
 [leaderboard]

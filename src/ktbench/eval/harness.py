@@ -128,7 +128,7 @@ def eval_translation(
     global_seed: int | None = None,
     n_warmup: int = 5,
     n_timing_trials: int = 20,
-    utilization_floor_pct: float = 2.0,
+    utilization_floor_pct: float = 0.05,
     excessive_speedup_threshold: float = 50.0,
     # Optional: if known, improves SOL accuracy
     flops: float | None = None,
@@ -241,6 +241,16 @@ def eval_translation(
     timing_inputs = problem.make_inputs(
         first_case.shapes, first_case.dtype, timing_rng, device
     )
+
+    # If the problem ships a perf.py with a flops formula, use it.
+    # Callers can still pass flops= explicitly to override.
+    if flops is None and problem.flops_fn is not None:
+        try:
+            flops = float(problem.flops_fn(first_case.shapes, first_case.dtype))
+        except Exception as e:
+            if verbose:
+                print(f"  warn: problem.flops_fn raised {type(e).__name__}: {e}; "
+                      f"falling back to memory-util-only SOL")
 
     cand_model = cand_cls()
     if hasattr(cand_model, "to"):
