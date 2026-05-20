@@ -1,10 +1,10 @@
-"""Auto-import all scenario modules so @scenario decorators fire."""
-from . import softmax_a100_to_h100  # noqa: F401
-from . import judge_softmax_a100_to_h100  # noqa: F401
-from . import swiglu_activation_a100_to_h100  # noqa: F401
-from . import softmax_h200_to_triton  # noqa: F401
-from . import causal_conv1d_silu_a100_to_h100  # noqa: F401
-from . import chunk_decay_scan_a100_to_h100  # noqa: F401
-from . import fused_rms_norm_residual_a100_to_h100  # noqa: F401
-from . import hadamard_transform_a100_to_h100  # noqa: F401
-from . import wkv_recurrence_a100_to_h100  # noqa: F401
+"""Auto-import every scenario module so its ``@scenario`` decorator fires."""
+
+from importlib import import_module
+from pathlib import Path
+
+_PKG = Path(__file__).resolve().parent
+for _p in sorted(_PKG.glob("*.py")):
+    if _p.name == "__init__.py" or _p.name.startswith("_"):
+        continue
+    import_module(f"{__name__}.{_p.stem}")

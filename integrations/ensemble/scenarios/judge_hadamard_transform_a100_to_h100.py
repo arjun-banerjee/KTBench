@@ -1,4 +1,4 @@
-"""KTBench multi-actor scenario: judge_softmax_a100_to_h100
+"""KTBench multi-actor scenario: judge_hadamard_transform_a100_to_h100
 
 Author + reviewer on the same problem. Compared cell-for-cell
 against the single-agent scenario for the same model + problem,
@@ -7,9 +7,9 @@ moves the score.
 
 Run::
 
-    KTBENCH_PROBLEM_PATH=problems/softmax_a100_to_h100 \
+    KTBENCH_PROBLEM_PATH=problems/hadamard_transform_a100_to_h100 \
     KTBENCH_AUTHOR_MODEL=gpt-5.5 \
-    ensemble run ktbench.judge_softmax_a100_to_h100 --world ktbench --backend openai
+    ensemble run ktbench.judge_hadamard_transform_a100_to_h100 --world ktbench --backend openai
 """
 
 import os
@@ -26,7 +26,7 @@ from ensemble import scenario
 from ensemble.persona import load_persona
 
 
-PROBLEM_PATH = "problems/softmax_a100_to_h100"
+PROBLEM_PATH = "problems/hadamard_transform_a100_to_h100"
 MAX_TURNS    = int(os.environ.get("KTBENCH_MAX_TURNS", "80"))
 
 
@@ -37,8 +37,8 @@ def _persona_system_prompt(name: str) -> str:
     return load_persona(persona_path).system_prompt
 
 
-@scenario("ktbench.judge_softmax_a100_to_h100", world="ktbench")
-async def judge_softmax_a100_to_h100(world):
+@scenario("ktbench.judge_hadamard_transform_a100_to_h100", world="ktbench")
+async def judge_hadamard_transform_a100_to_h100(world):
     os.environ["KTBENCH_PROBLEM_PATH"] = PROBLEM_PATH
 
     author_model   = os.environ.get("KTBENCH_AUTHOR_MODEL",

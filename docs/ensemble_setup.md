@@ -26,12 +26,12 @@ The agent loop on the ensemble path looks like this:
 
 1. The CLI invocation `ensemble run ktbench.<problem_id> --world ktbench --manifest integrations/ensemble` (or the equivalent Python invocation in the smoke section below) hands control to ensemble's scenario runner.
 2. Ensemble constructs `World('ktbench')`, which fires `_setup()` in `integrations/ensemble/ktbench_world/__init__.py`. The factory loads `configs/eval_defaults.toml` and builds five `PluginTool` wrappers plus six predicates. The three CUDA-touching tools are marked `sandbox=True`.
-3. The scenario function (one of `integrations/ensemble/scenarios/*.py`) runs. It sets `KTBENCH_PROBLEM_PATH` in the environment, loads the resolved persona from `personas/`, calls `prompt_for_path(PROBLEM_PATH)` to render the user-facing prompt, concatenates the persona's system prompt with the problem prompt, and calls `world.spawn_agent(...)` with the combined system prompt and the five tool names.
+3. The scenario function (one of `integrations/ensemble/scenarios/*.py`) runs. It sets `KTBENCH_PROBLEM_PATH` in the environment, loads the resolved persona from `personas/`, calls `prompt_for_path(PROBLEM_PATH)` to render the user-facing prompt, concatenates the persona's system prompt with the problem prompt, calls `world.log_event("problem_prompt", {"text": problem_prompt})` so the viewer can render the framing, and calls `world.spawn_agent(...)` with the combined system prompt and `world.tool_names()`. `spawn_agent` and `spawn_user` auto-emit `agent_spawned` / `user_spawned` events with the resolved model, persona, system prompt, and tools — no scenario-side logging helper required.
 4. The agent loop turns. Each turn, the LLM produces text plus zero or more tool calls. Each tool call dispatches to the matching `PluginTool.fn`:
    - For `static_check` and `get_gpu_specs`, the wrapper runs in-process. It reads `KTBENCH_PROBLEM_PATH` from the env, builds a fresh `ToolContext` from the env + the config, calls `Tool.execute(ctx, **args)`, and returns the JSON envelope.
-   - For `compile_kernel`, `run_correctness`, and `submit_kernel`, the wrapper is dispatched to a subprocess via `python -m ensemble.tool_worker --world ktbench --tool <name>`. The subprocess re-imports the `ktbench_world` package (which re-runs `_setup`), re-builds the `ToolContext` from the inherited env, executes the tool, and writes the JSON envelope on its stdout. A CUDA crash in the subprocess does not affect the parent.
+   - For `compile_kernel`, `run_correctness`, and `submit_kernel`, the wrapper is dispatched to a subprocess via `python -m ensemble.tool_worker --world ktbench --tool <name>`. The worker resolves the world via `ENSEMBLE_SANDBOX_PACKAGE` + `ENSEMBLE_SANDBOX_PACKAGE_DIR`, which the parent fills in from the `python_package` / `package_dir` we pass to `register_world`. It re-imports `ktbench_world`, re-builds the `ToolContext` from the inherited env, executes the tool, and writes the JSON envelope on its stdout. A CUDA crash in the subprocess does not affect the parent.
 5. The agent's `submit_kernel` call runs the full KTBench eval pipeline (static check, compile, structured correctness, stress, performance, score). The result lands on the trace as a `state_diff` event with `field=ktbench_submissions` carrying the per-stage metadata.
-6. The scenario's `until` predicate fires when the turn budget is exhausted. Grader predicates evaluate by walking the trace for `ktbench_submissions` events and return six numeric cells. The scenario returns the cells as a dict; ensemble emits a grader event on the trace.
+6. The scenario's `until` is `world.until_predicate("submit_called") | (world.turn_count > MAX_TURNS)`, so the scheduler halts the moment the agent commits — turn-count is the safety net, not the stop condition. Grader predicates evaluate by walking the trace for `ktbench_submissions` events and return six numeric cells. The scenario returns the cells as a dict; ensemble emits a grader event on the trace.
 7. The publisher (when run after the fact) walks `traces/`, parses each trace, builds `runs.json`, and publishes to gh-pages.
 
 The seam that keeps this clean is the env-var pattern. The problem path lives in `KTBENCH_PROBLEM_PATH`; the eval knobs live in `configs/eval_defaults.toml`. Both cross the parent/subprocess boundary automatically (env vars are inherited; the config file is read from disk in both processes), so sandboxed dispatches reconstruct the same `ToolContext` the parent would have built.
@@ -47,8 +47,16 @@ def _setup():
     predicates = build_predicates()      # six predicates
     return tools, predicates
 
-register_world("ktbench", setup=_setup, personas_dir=PERSONAS_DIR)
+register_world(
+    "ktbench",
+    setup=_setup,
+    personas_dir=PERSONAS_DIR,
+    python_package="ktbench_world",
+    package_dir=PACKAGE_DIR,
+)
 ```
+
+The `python_package` + `package_dir` pair is what lets the sandbox worker re-import this exact module without consulting `~/.ensemble/worlds.toml`. Drop them and sandbox dispatches fall back to a plain `import ktbench_world`, which only works when the world's package is on `sys.path` of the worker's interpreter; the explicit pair is the deterministic path.
 
 `_load_eval_config` reads the TOML, defaults to `configs/eval_defaults.toml` at the repo root, and can be overridden via `KTBENCH_EVAL_CONFIG`. The config feeds into the `ToolContext`'s `n_timing_trials` field; other fields (subprocess_timeout, utilization_floor_pct, etc.) are read by the underlying KTBench eval modules directly and do not need to round-trip through the integration.
 
@@ -78,7 +86,7 @@ Six grader predicates, all in `build_predicates()`:
 - `correctness_passed` — any submission with `correctness_rate >= 1.0`.
 - `stress_passed` — any submission with `stress_pass_rate >= 0.9`.
 - `sol_above_threshold` — any submission with `sol_score >= 0.5`.
-- `static_check_failed` — any `static_check` tool result with `effect.ok == false`.
+- `static_check_failed` — any `static_check` tool result with `result.ok == false`.
 
 The thresholds (1.0 for correctness, 0.9 for stress, 0.5 for SOL) match KTBench's eval defaults from `plan.md`. Adjust them in `build_predicates` or replace the thresholds with config-driven values if you want them tunable per run.
 
@@ -92,9 +100,12 @@ Two scenario shapes ship with the integration; both live under `integrations/ens
 
 Both scenarios:
 - Set `KTBENCH_PROBLEM_PATH` at the top of the function so the world's tool wrappers (including sandboxed dispatches) can re-derive the problem.
-- Call `prompt_for_path(PROBLEM_PATH)` to build the user-facing prompt.
+- Call `prompt_for_path(PROBLEM_PATH)` to build the user-facing prompt and emit it via `world.log_event("problem_prompt", {"text": problem_prompt})`.
 - Concatenate the persona's system prompt with the problem prompt as the agent's combined system context.
-- Call `_log_agent_prompt(...)` after each `spawn_agent` so the trace carries the resolved system prompt for each actor (workaround for ensemble not yet emitting a spawn event with the system prompt).
+- Pass `tools=world.tool_names()` to expose the full kit (single-actor) or an explicit subset (multi-actor reviewer).
+- Forward optional `params={"reasoning_effort": ...}` to ``spawn_agent`` when ``KTBENCH_REASONING_EFFORT`` is set so a single scenario can opt into reasoning-effort tuning per backend.
+- Seed a one-shot kickoff via `harness.say("kernel_engineer", "...")`; without it the scheduler quiesces before the first turn.
+- Halt on `world.until_predicate("submit_called") | (world.turn_count > MAX_TURNS)` so the run stops the moment a submission lands.
 
 `gen_scenarios.py` generates these templates per problem dir under `problems/`. Run `python integrations/ensemble/gen_scenarios.py --multi-actor` to emit both shapes per problem.
 
@@ -304,65 +315,45 @@ Override `KTBENCH_EVAL_CONFIG` per cell when you want different timing / stress 
 
 A few things worth flagging.
 
-**The `ensemble run` CLI shells to `uv run`.** The CLI tries to resolve `pyproject.toml` dependencies before doing anything. A yanked or unresolvable dep makes the CLI fail with a confusing error from uv. The fix is to make sure `pyproject.toml` resolves cleanly; if it doesn't and you're debugging, fall back to the direct-Python invocation under "Running" below.
+**The `ensemble run` CLI shells to `uv run`.** Pass `--no-sync` to skip uv and invoke the current python interpreter directly — useful when the host project's `pyproject.toml` has an unresolvable dep or a stale lockfile. The scenario only needs `ensemble` on `sys.path`, which the active venv already provides.
 
 **Sandbox is implicit — the agent does not see the boundary.** When `sandbox=True`, the tool dispatch goes to a subprocess but the agent's tool-result envelope looks identical. The subprocess re-imports `ktbench_world` (which re-runs `_setup`) and re-builds the `ToolContext` from env + config. This means the env vars the parent set (`KTBENCH_PROBLEM_PATH`, `KTBENCH_TIMING_TRIALS`, etc.) cross the boundary automatically; objects in the parent's Python state do not. Build the integration on env + config + the trace; in-memory state is invisible to sandbox workers.
 
-**`world._native.log_note` is private.** The integration calls into ensemble's native bindings to emit the spawn-time system prompt and the problem prompt on the trace. This is a workaround for ensemble not exposing a public spawn event with the system prompt. The right long-term fix is on the ensemble side; until then, the `_native` calls are isolated to two helper functions per scenario.
+**Long-running tool dispatches need a quiescence override.** A fresh `compile_kernel` from an LLM-emitted kernel routinely spends 30-90s in nvcc. The default 60-second quiescence window in ensemble's scheduler kills the run mid-compile if a single call exceeds it. Export `ENSEMBLE_QUIESCENCE_MS=600000` (10 minutes) for KTBench runs against reasoning models that produce non-trivial kernels.
 
 **Tool restrictions are an allow-list, not a deny-list.** When you pass `tools=[...]` to `spawn_agent`, the agent only sees those tools. `tools=None` means the agent sees every tool the world registered. Default to explicit allow-lists in any new scenario.
 
 **The mock backend returns no tool calls by default.** `ensemble run --backend mock` produces a trace where the agent never calls any tool because the mock script is empty. That is useful for verifying the integration shape, not for end-to-end testing. For a real end-to-end run, use a real LLM (`--backend anthropic` plus the API key) or write a mock script that pushes scripted tool calls in sequence.
 
-**Persona load is lazy and tolerant.** A missing persona TOML returns `None`; the scenario falls back to the model's default behaviour with no persona prompt. Verify the persona loaded correctly by inspecting the trace's `agent_spawn` note: if the system prompt is empty there, the persona did not resolve.
+**Persona load is lazy and tolerant.** A missing persona TOML returns an empty system prompt; the scenario falls back to the model's default behaviour with no persona framing. Verify the persona loaded correctly by inspecting the trace's `agent_spawned` event: if the `system_prompt` field there does not include the persona text, the persona did not resolve.
 
 **Sandboxed dispatches inherit env, not state.** A predicate that reads from an in-memory Python ledger sees only the parent's state — submissions made by a sandboxed subprocess never write to it. KTBench's predicates walk the trace instead, which is why each `submit_kernel` call emits a `ktbench_submissions` state-diff event. New tools that produce predicate-relevant state should follow the same pattern.
 
 ## Running
 
-The integration supports two invocation paths.
-
-**Through the ensemble CLI** (production path):
-
 ```bash
 KTBENCH_PROBLEM_PATH=problems/softmax_a100_to_h100 \
-KTBENCH_MODEL=claude-opus-4-7 \
-KTBENCH_PERSONA=normal_translation \
+KTBENCH_MODEL=gpt-5.5 \
+OPENAI_API_KEY=$TEJAS_AZURE_KEY \
+OPENAI_BASE_URL=https://tejas-mohrgcfh-eastus2.cognitiveservices.azure.com/openai/v1 \
+ENSEMBLE_QUIESCENCE_MS=600000 \
 ensemble run ktbench.softmax_a100_to_h100 \
-    --world ktbench --manifest integrations/ensemble
+    --world ktbench --backend openai --no-sync
 ```
 
-**Directly through Python** (debugging escape hatch when `uv` is misbehaving):
+`--no-sync` skips `uv run` and uses the active venv's interpreter directly. `--backend openai` is forwarded to the python entry point. `OPENAI_BASE_URL` and `OPENAI_API_KEY` configure Azure as an OpenAI-compatible endpoint (the v1 path accepts a Bearer token).
 
-```python
-import asyncio, sys, os
-sys.path.insert(0, '/path/to/ensemble/python')
-sys.path.insert(0, '/path/to/KTBench/src')
-sys.path.insert(0, '/path/to/KTBench')
-sys.path.insert(0, '/path/to/KTBench/integrations/ensemble')
-sys.path.insert(0, '/path/to/KTBench/integrations/ensemble/scenarios')
-
-os.environ['KTBENCH_PROBLEM_PATH'] = 'problems/softmax_a100_to_h100'
-import softmax_a100_to_h100  # imports ktbench_world too
-from ensemble.scenario import _REGISTRY
-
-result = asyncio.run(
-    _REGISTRY['ktbench.softmax_a100_to_h100'](trace_path='traces/run.jsonl')
-)
-print(result.scores)
-```
-
-Both paths produce the same trace shape and the same `RunResult`.
+`scripts/launch_waves.sh` fans 8 cells across 8 GPUs in sequence (Wave A: single-agent, then Wave B: judge) and is the production sweep entry point. Run it inside a tmux pane and let it churn while `scripts/publish_traces.py --watch 120 --remote tejas` keeps the leaderboard live.
 
 ## Publishing
 
 After one or more runs, publish the leaderboard:
 
 ```bash
-python scripts/publish_traces.py --ensemble-root ~/Documents/ensemble
+python scripts/publish_traces.py --ensemble-root /scratch/tejas/ensemble --remote tejas --watch 120
 ```
 
-The script walks `traces/`, parses each trace for submission metadata (the `ktbench_submissions` state-diff events), builds `runs.json` at the gh-pages root, copies `site/` (the leaderboard + run index) and the ensemble per-run viewer assets. For a continuous publish during a long sweep, pass `--watch 300`; for offline verification, `--dry-run`.
+The script walks `traces/`, parses each trace for submission metadata (the `ktbench_submissions` state-diff events), builds `runs.json` at the gh-pages root, copies `site/` (the leaderboard + run index) and the ensemble per-run viewer assets. `--watch <secs>` republishes on a fixed cadence so the live leaderboard updates while a sweep runs. `--remote <name>` selects the git remote to push to (default `origin`); set it to a personal fork when you do not have push rights on the main repo. `--dry-run` skips the commit and push.
 
 The leaderboard ranks by `final_score` (KTBench's `correctness × stress × sol_score`) and breaks out a per-(src_dsl, tgt_dsl) view. SOL is the headline performance number because it is physically bounded by hardware peak; speedup vs the reference target is captured in the per-run record but is not the ranking column.
 
@@ -393,7 +384,8 @@ KTBench/
 │   ├── index.html                        # leaderboard home
 │   └── runs.html                         # full run index
 ├── scripts/
-│   └── publish_traces.py                 # walks traces/, builds runs.json, publishes gh-pages
+│   ├── publish_traces.py                 # walks traces/, builds runs.json, publishes gh-pages
+│   └── launch_waves.sh                   # Wave A + Wave B sweep across 8 GPUs in tmux
 └── docs/
     ├── adding_problems.md                # problem authoring guide (Arjun)
     ├── problems.md

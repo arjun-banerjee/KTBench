@@ -103,14 +103,14 @@ def _ensure_gh_pages_branch_exists() -> None:
     _git(["checkout", "-"])
 
 
-def _worktree(scratch: Path, *, fetch_remote: bool = True) -> Path:
+def _worktree(scratch: Path, *, fetch_remote: bool = True, remote: str = "origin") -> Path:
     worktree = scratch / "gh-pages-worktree"
     if worktree.exists():
         _git(["worktree", "remove", "--force", str(worktree)], check=False)
         shutil.rmtree(worktree, ignore_errors=True)
     if fetch_remote:
-        _git(["fetch", "origin", "gh-pages"], check=False)
-        _git(["worktree", "add", "-B", "gh-pages", str(worktree), "origin/gh-pages"], check=False)
+        _git(["fetch", remote, "gh-pages"], check=False)
+        _git(["worktree", "add", "-B", "gh-pages", str(worktree), f"{remote}/gh-pages"], check=False)
     if not worktree.exists():
         _git(["worktree", "add", "-b", "gh-pages-local", str(worktree)], check=False)
         if not worktree.exists():
@@ -375,9 +375,9 @@ def _write_runs_json(worktree: Path, summaries: List[Summary]) -> None:
     (worktree / "runs.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def publish(ensemble_root: Path, scratch: Path, dry_run: bool = False) -> None:
+def publish(ensemble_root: Path, scratch: Path, dry_run: bool = False, remote: str = "origin") -> None:
     _ensure_gh_pages_branch_exists()
-    worktree = _worktree(scratch, fetch_remote=not dry_run)
+    worktree = _worktree(scratch, fetch_remote=not dry_run, remote=remote)
     _wipe_worktree(worktree)
 
     _copy_local_site(worktree)
@@ -403,12 +403,12 @@ def publish(ensemble_root: Path, scratch: Path, dry_run: bool = False) -> None:
         return
     stamp = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     _git(["commit", "-m", f"publish {len(summaries)} runs {stamp}"], cwd=worktree)
-    push = _run(["git", "push", "origin", "gh-pages"], cwd=worktree, check=False)
+    push = _run(["git", "push", remote, "gh-pages"], cwd=worktree, check=False)
     if push.returncode != 0:
         print(push.stderr, file=sys.stderr)
         print("publish: push failed (see stderr above)", file=sys.stderr)
         return
-    print(f"published {len(summaries)} runs to gh-pages", file=sys.stderr)
+    print(f"published {len(summaries)} runs to {remote}/gh-pages", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -436,6 +436,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Build the worktree and runs.json but skip the commit and push.",
     )
+    parser.add_argument(
+        "--remote",
+        default="origin",
+        help="Git remote to fetch and push the gh-pages branch from/to (default: origin).",
+    )
     args = parser.parse_args(argv)
 
     ensemble_root = Path(args.ensemble_root).expanduser().resolve()
@@ -444,7 +449,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     while True:
         try:
-            publish(ensemble_root, scratch, dry_run=args.dry_run)
+            publish(ensemble_root, scratch, dry_run=args.dry_run, remote=args.remote)
         except Exception as e:
             print(f"publish failed: {e}", file=sys.stderr)
         if args.watch <= 0:

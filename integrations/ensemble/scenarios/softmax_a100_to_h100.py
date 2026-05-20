@@ -1,17 +1,15 @@
-"""
-Example KTBench scenario: softmax_a100_to_h100.
+"""KTBench scenario: softmax_a100_to_h100.
 
-To add a new problem, copy this file, change PROBLEM_PATH and the
-@scenario name. Everything else stays the same; the world's
-configuration (num_timing_trials, device, sandbox) flows from env +
-configs/eval_defaults.toml automatically.
+To add a new problem, copy this file, change ``PROBLEM_PATH`` and
+the ``@scenario`` name. The world's tool wrappers pick up the
+problem from ``KTBENCH_PROBLEM_PATH``; the rest stays the same.
 
-Run:
+Run::
+
     KTBENCH_PROBLEM_PATH=problems/softmax_a100_to_h100 \\
+    KTBENCH_MODEL=gpt-5.5 \\
     ensemble run ktbench.softmax_a100_to_h100 \\
-        --world ktbench \\
-        --manifest integrations/ensemble \\
-        --backend anthropic
+        --world ktbench --backend openai
 """
 
 import os
@@ -29,83 +27,51 @@ from ensemble.persona import load_persona
 
 
 PROBLEM_PATH = "problems/softmax_a100_to_h100"
-MAX_TURNS    = int(os.environ.get("KTBENCH_MAX_TURNS", "30"))
+MAX_TURNS    = int(os.environ.get("KTBENCH_MAX_TURNS", "80"))
 
 
-def _log_agent_prompt(world, agent_id: str, persona_name: str, model: str) -> None:
-    """Write the resolved persona's system prompt to the trace.
-
-    Ensemble does not emit a spawn event with the system prompt today,
-    so the trace viewer cannot show it without this note. Best-effort:
-    a missing persona file leaves the trace without the spawn note
-    rather than failing the run.
-    """
-    try:
-        persona_path = PERSONAS_DIR / f"{persona_name}.toml"
-        spec = load_persona(persona_path)
-        note = (
-            f"agent_spawn: id={agent_id} persona={spec.name} model={model}\n"
-            f"system_prompt:\n{spec.system_prompt}"
-        )
-        world._native.log_note(note)
-    except Exception:
-        pass
+def _persona_system_prompt(name: str) -> str:
+    persona_path = PERSONAS_DIR / f"{name}.toml"
+    if not persona_path.exists():
+        return ""
+    return load_persona(persona_path).system_prompt
 
 
 @scenario("ktbench.softmax_a100_to_h100", world="ktbench")
 async def softmax_a100_to_h100(world):
-    # Bind the problem for the world's tool wrappers. The wrappers read
-    # KTBENCH_PROBLEM_PATH at tool-call time and re-derive the same
-    # ToolContext inside the sandbox, so this env var has to be set
-    # before the agent's first tool call. Setting it here in the
-    # scenario means a CLI invocation does not have to remember to.
     os.environ["KTBENCH_PROBLEM_PATH"] = PROBLEM_PATH
 
-    model = os.environ.get("KTBENCH_MODEL", "claude-opus-4-7")
+    model        = os.environ.get("KTBENCH_MODEL", "claude-opus-4-7")
     persona_name = os.environ.get("KTBENCH_PERSONA", "normal_translation")
+    effort       = os.environ.get("KTBENCH_REASONING_EFFORT")
 
-    # Persona's baseline framing + the problem-specific prompt go in
-    # together as the agent's system context. spawn_agent takes a
-    # single system_prompt; the persona text covers role + scoring,
-    # the prompt below adds the source kernel and target HW.
-    persona_path = PERSONAS_DIR / f"{persona_name}.toml"
-    persona_system = ""
-    if persona_path.exists():
-        persona_system = load_persona(persona_path).system_prompt
     problem_prompt = prompt_for_path(PROBLEM_PATH)
-    full_system = (persona_system + "\n\n---\n\n" + problem_prompt).lstrip()
+    system_prompt  = (_persona_system_prompt(persona_name) + "\n\n---\n\n" + problem_prompt).lstrip()
 
+    world.log_event("problem_prompt", {"text": problem_prompt})
+
+    params = {"reasoning_effort": effort} if effort else None
     world.spawn_agent(
         id="kernel_engineer",
         model=model,
-        system_prompt=full_system,
-        tools=[
-            "static_check",
-            "compile_kernel",
-            "run_correctness",
-            "get_gpu_specs",
-            "submit_kernel",
-        ],
+        system_prompt=system_prompt,
+        tools=world.tool_names(),
+        params=params,
     )
-    _log_agent_prompt(world, "kernel_engineer", persona_name, model)
-    world._native.log_note(f"problem_prompt:\n{problem_prompt}")
 
-    # The world's scheduler quiesces if no inbound message is queued
-    # for the agent at startup; a synthetic harness user delivers a
-    # single "begin" kickoff so the agent's first turn fires.
+    # Scheduler quiesces without an inbound message at startup. A
+    # harness user delivers a one-shot kickoff and then stays silent.
+    # The kickoff intentionally does NOT prescribe a workflow — the
+    # model discovers its own path.
     harness = world.spawn_user(id="harness", persona="ktbench_harness", model="user-model")
     harness.say(
         "kernel_engineer",
-        "Begin. Use the tools to iterate (compile_kernel, run_correctness, get_gpu_specs) "
-        "and call submit_kernel once with your final ModelNew.",
+        "Begin. Your score is 0 unless submit_kernel is called — that is "
+        "the only event that counts.",
     )
 
-    yield world.until(world.turn_count > MAX_TURNS)
+    yield world.until_predicate("submit_called") | (world.turn_count > MAX_TURNS)
 
-    # Six grader cells, all in [0, 1]. The world's predicates pull
-    # submission metadata from ktbench_submissions state-diff events
-    # on the trace, which survives the parent/subprocess split caused
-    # by sandbox dispatch.
     yield {
         "submitted":             1.0 if world.evaluate_predicate("submit_called") else 0.0,
         "submit_passed":         1.0 if world.evaluate_predicate("submit_passed") else 0.0,
