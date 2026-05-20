@@ -22,8 +22,9 @@ Existing kernel benchmarks (KernelBench, robust-kbench) evaluate optimization fr
 ```bash
 git clone https://github.com/arjun-banerjee/KTBench.git
 cd KTBench
-pip install -e ".[triton]"         # add [nki] for Trainium support
-pip install -e ".[triton,llm]"     # also install openai SDK for the LLM agent
+pip install -e ".[triton]"              # core eval + Triton DSL
+pip install -e ".[triton,llm]"          # + openai SDK for single-model agent
+pip install -e ".[triton,llm,inspect]"  # + Inspect AI for multi-model frontier sweep
 ```
 
 Requires Python 3.11+, PyTorch 2.3+, CUDA 12.x.
@@ -81,6 +82,58 @@ OPENAI_API_KEY=sk-... python scripts/run_agent.py \
 In multi-turn mode the model has access to five tools: `static_check`,
 `compile_kernel`, `run_correctness`, `get_gpu_specs`, and `submit_kernel`.
 The session ends when the model calls `submit_kernel`.
+
+### Benchmark frontier models (multi-provider sweep)
+
+Compare multiple models side-by-side with a single command. Requires `pip install -e ".[inspect]"`.
+
+```bash
+# Install Inspect AI support
+pip install -e ".[triton,inspect]"
+
+# Benchmark four frontier models on one problem
+OPENAI_API_KEY=sk-...  \
+ANTHROPIC_API_KEY=sk-ant-...  \
+GOOGLE_API_KEY=...  \
+XAI_API_KEY=...  \
+python scripts/run_sweep.py \
+    --problems problems/softmax_h200_to_triton \
+    --models openai/o3 anthropic/claude-opus-4-7 google/gemini-2.5-pro xai/grok-3 \
+    --device 0 \
+    --out results/sweep.json
+```
+
+Output:
+```
+MODEL                                    PROBLEM                                   SCORE
+-------------------------------------------------------------------------------------------------------
+anthropic/claude-opus-4-7               softmax_h200_to_triton                   0.8312
+openai/o3                               softmax_h200_to_triton                   0.7941
+google/gemini-2.5-pro                   softmax_h200_to_triton                   0.7450
+xai/grok-3                              softmax_h200_to_triton                   0.6810
+```
+
+Results are also saved to `results/sweep.json`. Raw Inspect AI logs go to `results/inspect_logs/`.
+
+You can also invoke Inspect AI directly for more control:
+
+```bash
+inspect eval integrations/inspect_ai.py \
+    --model openai/o3 \
+    --model anthropic/claude-opus-4-7 \
+    -T problem_path=problems/softmax_h200_to_triton \
+    -T max_messages=30 \
+    --log-dir results/inspect_logs
+```
+
+**API keys per provider:**
+
+| Model prefix | Env var | Example |
+|---|---|---|
+| `openai/` | `OPENAI_API_KEY` | `openai/o3`, `openai/gpt-4o` |
+| `anthropic/` | `ANTHROPIC_API_KEY` | `anthropic/claude-opus-4-7` |
+| `google/` | `GOOGLE_API_KEY` | `google/gemini-2.5-pro` |
+| `xai/` | `XAI_API_KEY` | `xai/grok-3` |
 
 ### Add a new problem
 
@@ -344,10 +397,29 @@ Only `ModelNew().forward(*inputs)` is called by the grader. Helper functions and
 
 | Script | Purpose |
 |---|---|
-| `scripts/run_agent.py` | Generate a translation via LLM then optionally evaluate |
+| `scripts/run_sweep.py` | Sweep multiple frontier models (OpenAI, Anthropic, Google, xAI) |
+| `scripts/run_agent.py` | Single model: single-shot or multi-turn tool-calling loop |
 | `scripts/run_eval.py` | Evaluate one candidate against one problem |
 | `scripts/add_problem.py` | Scaffold a new problem directory |
 | `scripts/build_oracle_tensors.py` | Pre-compute oracle outputs for structured cases |
+
+### `run_sweep.py`
+
+```
+python scripts/run_sweep.py --problems PATH [PATH ...] --models MODEL [MODEL ...] [options]
+
+  --problems    One or more problem directory paths
+  --models      One or more model strings (openai/o3, anthropic/claude-opus-4-7, …)
+
+  --device N         CUDA device index (default: 0)
+  --seed N           RNG seed (default: random)
+  --n-timing N       Timing trials per submission (default: 20)
+  --max-turns N      Message cap per session (default: 30)
+  --log-dir DIR      Inspect AI log dir (default: results/inspect_logs)
+  --out FILE         Write leaderboard JSON to FILE
+```
+
+Requires `pip install -e ".[inspect]"` and the relevant API keys in your environment.
 
 ### `run_agent.py`
 
@@ -470,7 +542,11 @@ KTBench/
 │   ├── dataset.py               # problem loading and filtering
 │   ├── prompt.py                # prompt construction (no shapes exposed)
 │   └── score.py                 # final score and leaderboard row
+├── integrations/                # harness adapters (install optional extras)
+│   ├── __init__.py              # shared fmt_result(), extract_final_score()
+│   └── inspect_ai.py            # Inspect AI task + multi-model eval (pip install .[inspect])
 ├── scripts/
+│   ├── run_sweep.py             # frontier model sweep via Inspect AI
 │   ├── run_agent.py             # LLM → single-shot or multi-turn tool loop
 │   ├── run_eval.py
 │   ├── add_problem.py
