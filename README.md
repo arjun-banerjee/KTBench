@@ -135,6 +135,83 @@ inspect eval integrations/inspect_ai.py \
 | `google/` | `GOOGLE_API_KEY` | `google/gemini-2.5-pro` |
 | `xai/` | `XAI_API_KEY` | `xai/grok-3` |
 
+### Multi-actor runs via ensemble
+
+KTBench's eval harness is harness-agnostic; the same five tools that drive
+the Inspect AI integration also drive an [ensemble](https://github.com/tejasprabhune/ensemble)
+integration that adds two affordances Inspect AI does not: **multi-actor
+scenarios** (an author writes the kernel, a separate reviewer agent audits
+the trace as the author builds it), and **a trace viewer** with a leaderboard
+and per-run pages published to GitHub Pages.
+
+Install:
+
+```bash
+pip install -e '.[ensemble]'
+# plus ensemble itself, from a local checkout for now:
+# pip install -e ~/Documents/ensemble/python/ensemble
+```
+
+Single-agent translation, ensemble-driven:
+
+```bash
+KTBENCH_PROBLEM_PATH=problems/softmax_h200_to_triton \
+KTBENCH_MODEL=claude-sonnet-4-5 \
+KTBENCH_PERSONA=normal_translation \
+ensemble run ktbench.translate_problem --world ktbench \
+    --package-dir scenarios
+```
+
+Multi-actor (author + reviewer) on the same problem:
+
+```bash
+KTBENCH_PROBLEM_PATH=problems/softmax_h200_to_triton \
+KTBENCH_AUTHOR_MODEL=claude-sonnet-4-5 \
+KTBENCH_REVIEWER_MODEL=claude-sonnet-4-5 \
+KTBENCH_AUTHOR_PERSONA=normal_translation \
+ensemble run ktbench.judge_translate --world ktbench \
+    --package-dir scenarios
+```
+
+The author has the full tool kit (`static_check`, `compile_kernel`,
+`run_correctness`, `get_gpu_specs`, `submit_kernel`); the reviewer has the
+read-only subset (`static_check`, `run_correctness`) and the `code_reviewer`
+persona that redirects the role to audit rather than authoring. The grader
+returns the same six cells in both scenarios (`submitted`, `submit_passed`,
+`correctness_passed`, `stress_passed`, `utilization_passed`,
+`static_check_failed`), so the lift from adding a reviewer is directly
+comparable across the two configurations.
+
+Each run writes a JSONL trace under `traces/`. To publish the leaderboard
+and per-run viewer pages to GitHub Pages:
+
+```bash
+python scripts/publish_traces.py --ensemble-root ~/Documents/ensemble
+```
+
+The script walks `traces/`, builds `runs.json` at the gh-pages root (with
+per-run `final_score`, `sol_score`, `correctness_rate`, `stress_pass_rate`,
+and the translation axis), copies the local `site/` (the leaderboard + run
+index), and copies the ensemble viewer assets next to each trace so deep
+links resolve. Pass `--watch 300` to republish on a five-minute cadence
+while a sweep is running.
+
+The available personas under `personas/`:
+
+| Persona | Role | Use case |
+|---|---|---|
+| `normal_translation` | Baseline / control | Default for translate_problem |
+| `normal` | Baseline (CUDA write task) | Comparing translation framing against a write task framing |
+| `methodical_engineer` | Intervention (lint-first, careful) | Compare against `normal` to measure value of a methodical style |
+| `speed_obsessed` | Intervention (aggressive optimisation) | Red-team the eval; trips the static checker more often |
+| `code_reviewer` | Role redirect (audit, no authoring) | Reviewer slot in `judge_translate` |
+
+The ensemble integration lives at `integrations/ensemble.py`; scenarios at
+`scenarios/translate_problem.py` and `scenarios/judge_translate.py`. The
+adapter exposes a `KTBenchState`, the five wrapped `PluginTool`s, and six
+grader predicates; both scenarios are short (under 100 lines each) and
+serve as templates for new translation-flavoured scenarios.
+
 ### Add a new problem
 
 ```bash
