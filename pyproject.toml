@@ -12,7 +12,6 @@ dependencies = [
     "safetensors>=0.4",
     "tomli>=2.0; python_version < '3.11'",
     "pydantic>=2.0",
-    "pydra-config>=0.1",
     "rich>=13",
 ]
 
@@ -22,6 +21,7 @@ nki        = ["neuronxcc"]
 llm        = ["openai>=1.30"]
 dev        = ["pytest", "pytest-timeout"]
 inspect    = ["inspect-ai>=0.3"]
+ensemble   = ["ensemble"]
 langgraph  = ["langgraph>=0.2", "langchain-core>=0.3", "langchain-openai>=0.2"]
 smolagents = ["smolagents[litellm]>=1.0"]
 autogen    = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
