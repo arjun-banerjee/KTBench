@@ -2,97 +2,112 @@
 
 This document is the contract documentation for the ensemble integration. It covers what each piece does, how the pieces compose into a working agent run, and what you change to extend each axis (new persona, new actor, new scenario, new problem, new metric).
 
-The intended reader is someone who has read the top-level `README.md` and the `plan.md` and now wants to write code against the integration. Examples come from the existing files; cross-links go to specific section headers rather than to whole files.
+The intended reader is someone who has read the top-level `README.md` and `plan.md` and now wants to write code against the integration. Examples come from the existing files; cross-links go to specific section headers rather than to whole files.
 
-The ensemble integration lives in three files: `integrations/ensemble.py`, `scenarios/translate_problem.py`, and `scenarios/judge_translate.py`. The rest of the repo (problem layout, eval harness, scoring, anti-hack machinery) is shared with the Inspect AI integration and is documented in `plan.md` and `harness_plan.md`.
+The ensemble integration lives entirely under `integrations/ensemble/`. The eval harness, the per-problem layout, the SOL machinery, and the anti-hack patterns are shared with the Inspect AI integration and are documented in `plan.md`.
 
 ## Why ensemble at all
 
-KTBench's eval harness is harness-agnostic. The five tools the model calls (`static_check`, `compile_kernel`, `run_correctness`, `get_gpu_specs`, `submit_kernel`) have a `Tool.execute(ctx, **kwargs) -> ToolResult` interface; anything that can drive a tool-calling loop against that signature can be a KTBench harness. Inspect AI does this with its `@tool` decorator, an async closure per tool, and a `Task` that runs `use_tools()` then `generate()`. The ensemble integration does the same shape using ensemble's `PluginTool` wrappers and a scenario that calls `spawn_agent`.
+KTBench's eval harness is harness-agnostic. The five tools the model calls (`static_check`, `compile_kernel`, `run_correctness`, `get_gpu_specs`, `submit_kernel`) have a `Tool.execute(ctx, **kwargs) -> ToolResult` interface; anything that can drive a tool-calling loop against that signature can be a KTBench harness.
 
-The ensemble path adds two affordances Inspect AI does not have:
+The ensemble path adds three affordances on top of Inspect AI:
 
-1. **Multi-actor scenarios.** A scenario can spawn two or more agents (or a mix of agents and simulated users) that share the same world and tool registry but each carry their own context window, persona, and tool restriction. The `code_reviewer` persona reads the trace as the author builds the kernel and flags suspicious submissions. Comparing single-agent runs against author + reviewer runs on the same problem cell measures whether the multi-actor pattern improves the held-out pass rate. This is the central research question this integration is designed to answer.
+1. **Multi-actor scenarios.** A scenario can spawn two or more agents (or a mix of agents and simulated users) that share the same world and tool registry but each carry their own context window, persona, and tool restriction. The `code_reviewer` persona reads the trace as the author builds the kernel and flags suspicious submissions. Comparing single-agent against author+reviewer on the same problem cell measures whether the multi-actor pattern improves correctness or SOL. The worked example is `integrations/ensemble/scenarios/judge_softmax_a100_to_h100.py`.
 
-2. **A trace recorder + viewer.** Every event (tool call, tool result, state diff, cost annotation, grader output, system note) lands in a JSONL trace that ensemble's static viewer can render. The viewer polls the trace file every two seconds, so traces are readable as they grow. The publisher at `scripts/publish_traces.py` walks `traces/`, parses each into a summary record, and writes a `runs.json` plus a per-run viewer page to gh-pages.
+2. **Sandboxed CUDA dispatch.** A CUDA kernel that does an illegal memory access, hits a watchdog timeout, or otherwise corrupts the CUDA context poisons every subsequent CUDA call in the same process. Without isolation, one bad candidate fails every later eval in the sweep. The ensemble integration marks the three CUDA-touching tools (`compile_kernel`, `run_correctness`, `submit_kernel`) with `sandbox=True`; each call dispatches to a fresh `python -m ensemble.tool_worker` subprocess, so a fatal kernel kills only its worker and the next call gets a clean Python interpreter and a clean CUDA context. `static_check` and `get_gpu_specs` do not touch the GPU and run in-process.
 
-If you only need single-shot or multi-turn Inspect AI runs across providers, stay on the Inspect AI integration. Reach for the ensemble integration when you want a reviewer actor in the loop or when you want the leaderboard.
+3. **A trace recorder + viewer.** Every event (tool call, tool result, state diff, cost annotation, grader output, system note) lands in a JSONL trace that ensemble's static viewer can render. The viewer polls the trace file every two seconds, so traces are readable as they grow. `scripts/publish_traces.py` walks `traces/`, parses each into a summary record, and writes a `runs.json` plus a per-run viewer page to gh-pages.
+
+If you only need single-shot or multi-turn Inspect AI runs across providers, stay on the Inspect AI integration. Reach for the ensemble integration when you want sandbox isolation, a reviewer actor, or the leaderboard.
 
 ## How the pieces compose
 
 The agent loop on the ensemble path looks like this:
 
-1. `ensemble run ktbench.translate_problem --world ktbench` (or the equivalent Python invocation) hands control to ensemble's scenario runner.
-2. Ensemble constructs `World('ktbench')`, which fires `integrations.ensemble._setup()`. The factory reads env vars, builds a `KTBenchState` (which loads the problem and constructs a `ToolContext`), wraps the five KTBench tools as `PluginTool`s, and returns the tools plus six predicates.
-3. The scenario function in `scenarios/translate_problem.py` runs. It reads env vars to pick a persona, a model, a turn budget. It loads the persona's system prompt, concatenates it with `build_prompt(problem)`, and calls `world.spawn_agent(...)` with the combined system prompt and the five tool names.
-4. The agent loop turns. Each turn, the LLM produces text plus zero or more tool calls. Each tool call dispatches to the matching `PluginTool.fn` wrapper, which calls into the KTBench tool's `.execute(ctx, **kwargs)` and serialises the `ToolResult` into the JSON envelope ensemble expects (`{"effect": ..., "diff": ...}`).
-5. The agent's `submit_kernel` call runs the full KTBench eval pipeline (static check, compile, structured correctness, stress, performance, score). The result lands in `state.submissions` as a Python dict, and a state-diff event with the per-stage metadata fires on the trace.
-6. The scenario's `until` predicate fires when the agent has spent its turn budget or has submitted. Grader predicates evaluate against `state.submissions` and return six numeric cells. The scenario returns the cells as a dict; ensemble emits a grader event on the trace.
+1. The CLI invocation `ensemble run ktbench.<problem_id> --world ktbench --manifest integrations/ensemble` (or the equivalent Python invocation in the smoke section below) hands control to ensemble's scenario runner.
+2. Ensemble constructs `World('ktbench')`, which fires `_setup()` in `integrations/ensemble/ktbench_world/__init__.py`. The factory loads `configs/eval_defaults.toml` and builds five `PluginTool` wrappers plus six predicates. The three CUDA-touching tools are marked `sandbox=True`.
+3. The scenario function (one of `integrations/ensemble/scenarios/*.py`) runs. It sets `KTBENCH_PROBLEM_PATH` in the environment, loads the resolved persona from `personas/`, calls `prompt_for_path(PROBLEM_PATH)` to render the user-facing prompt, concatenates the persona's system prompt with the problem prompt, and calls `world.spawn_agent(...)` with the combined system prompt and the five tool names.
+4. The agent loop turns. Each turn, the LLM produces text plus zero or more tool calls. Each tool call dispatches to the matching `PluginTool.fn`:
+   - For `static_check` and `get_gpu_specs`, the wrapper runs in-process. It reads `KTBENCH_PROBLEM_PATH` from the env, builds a fresh `ToolContext` from the env + the config, calls `Tool.execute(ctx, **args)`, and returns the JSON envelope.
+   - For `compile_kernel`, `run_correctness`, and `submit_kernel`, the wrapper is dispatched to a subprocess via `python -m ensemble.tool_worker --world ktbench --tool <name>`. The subprocess re-imports the `ktbench_world` package (which re-runs `_setup`), re-builds the `ToolContext` from the inherited env, executes the tool, and writes the JSON envelope on its stdout. A CUDA crash in the subprocess does not affect the parent.
+5. The agent's `submit_kernel` call runs the full KTBench eval pipeline (static check, compile, structured correctness, stress, performance, score). The result lands on the trace as a `state_diff` event with `field=ktbench_submissions` carrying the per-stage metadata.
+6. The scenario's `until` predicate fires when the turn budget is exhausted. Grader predicates evaluate by walking the trace for `ktbench_submissions` events and return six numeric cells. The scenario returns the cells as a dict; ensemble emits a grader event on the trace.
 7. The publisher (when run after the fact) walks `traces/`, parses each trace, builds `runs.json`, and publishes to gh-pages.
 
-The seam that keeps this clean is `ToolContext`. It carries the problem, the device, the seed, and the timing-trial count, and every tool's `execute()` takes it as the first positional. Same `ToolContext` for every tool call in a session, fresh one per `World('ktbench')` construction. The five tools never see ensemble; ensemble never sees the eval harness internals.
+The seam that keeps this clean is the env-var pattern. The problem path lives in `KTBENCH_PROBLEM_PATH`; the eval knobs live in `configs/eval_defaults.toml`. Both cross the parent/subprocess boundary automatically (env vars are inherited; the config file is read from disk in both processes), so sandboxed dispatches reconstruct the same `ToolContext` the parent would have built.
 
-## The shared state object
+## The world's setup factory
 
-`KTBenchState` in `integrations/ensemble.py` is the object every `PluginTool` and every predicate closes over. It is constructed once per `World('ktbench')` and carries three things:
+`integrations/ensemble/ktbench_world/__init__.py` contains the integration's core. The setup factory runs once per `World('ktbench')`:
 
-- `problem: Problem` — the loaded problem object. Read by every tool that needs the source kernel, the oracle, the test suite, or the target hardware spec.
-- `ctx: ToolContext` — the shared context object every KTBench `Tool.execute()` takes. Bundles the problem with the device index, the global seed, and `n_timing_trials`.
-- `submissions: list[dict]` — append-only ledger of submit_kernel metadata. Populated by the `capture_submit=True` branch of `_wrap_tool`. The grader predicates read this directly instead of walking the trace, which means they are O(1) per call.
+```python
+def _setup():
+    config = _load_eval_config()         # reads configs/eval_defaults.toml
+    tools = build_all_tools(config)      # five wrapped PluginTools
+    predicates = build_predicates()      # six predicates
+    return tools, predicates
 
-The state is per-world, not per-agent. In `judge_translate` both the author and the reviewer share the same `KTBenchState`. That is deliberate: the reviewer's `run_correctness` call must use the same test suite + seed the author's `submit_kernel` will use, otherwise the reviewer's "I ran correctness and it passes" claim has no relationship to the author's eventual submit-time result.
+register_world("ktbench", setup=_setup, personas_dir=PERSONAS_DIR)
+```
 
-If you need per-actor state that other actors do not see, put it in the actor's `hidden_state` on the persona TOML rather than in the shared `KTBenchState`.
+`_load_eval_config` reads the TOML, defaults to `configs/eval_defaults.toml` at the repo root, and can be overridden via `KTBENCH_EVAL_CONFIG`. The config feeds into the `ToolContext`'s `n_timing_trials` field; other fields (subprocess_timeout, utilization_floor_pct, etc.) are read by the underlying KTBench eval modules directly and do not need to round-trip through the integration.
+
+`build_all_tools(config)` wraps the five KTBench `Tool` instances as ensemble `PluginTool`s via `_wrap_tool`. Each wrapper reconstructs a fresh `ToolContext` from `KTBENCH_PROBLEM_PATH` + the config at every call. This is deliberate: sandboxed dispatches cannot share Python objects with the parent, so the wrapper has to be able to rebuild its context from inheritable state (env vars) alone.
+
+`build_predicates()` returns six `PluginPredicate` instances that walk the trace for `ktbench_submissions` state-diff events. Predicates read from the trace, not from an in-memory ledger, for the same reason: a submission emitted by a sandboxed subprocess never lands in the parent's Python state.
 
 ## The tool wrappers
 
-Every KTBench `Tool` is wrapped via `_wrap_tool(tool_obj, state, *, capture_submit=False)` in `integrations/ensemble.py`. The wrapper does five things per call:
+`_wrap_tool` is six steps per call:
 
-1. Parse `args_json` to a Python dict (ensemble's JSON-string ABI).
-2. Call `tool_obj.execute(state.ctx, **args)`. Any exception turns into a structured error envelope so the agent gets a useful failure message instead of a Python traceback.
-3. Run `fmt_result(result)` to produce the LLM-facing summary string (the tool's `.output` plus a `[meta] {...}` JSON tail).
-4. If `capture_submit=True` (only `submit_kernel`), append the result's metadata to `state.submissions` and emit a structured state-diff event on the trace under the `ktbench_submissions` field so post-hoc analysis tools and the publisher can read it.
-5. Return a JSON envelope ensemble understands.
+1. Parse `args_json` to a Python dict.
+2. Build a fresh `ToolContext` from env + config via `_ctx_from_env_and_config`. If `KTBENCH_PROBLEM_PATH` is unset, the wrapper returns a clear error envelope; the agent gets a useful message instead of a Python traceback.
+3. Call `tool_obj.execute(ctx, **args)`. Any exception turns into a structured error envelope.
+4. Run `fmt_result(result)` to produce the LLM-facing summary string (the tool's `.output` plus a `[meta] {...}` JSON tail).
+5. If `capture_submit=True` (only `submit_kernel`), build a `diff` dict with the per-stage metadata and field=`ktbench_submissions`. The trace viewer renders this as a state-changes panel and predicates read it back.
+6. Return a JSON envelope ensemble understands.
 
-The five tool names (`static_check`, `compile_kernel`, `run_correctness`, `get_gpu_specs`, `submit_kernel`) come from the underlying `Tool.name` attribute and are stable across both harnesses. A scenario that wants to give the agent a different tool subset passes the names it wants to `spawn_agent(tools=[...])`; ensemble's per-agent tool filtering enforces the restriction.
-
-If you add a new KTBench tool, the wrapper handles it automatically — you only need to add it to `build_all_tools(state)` in the integration.
+The wrapper marks `compile_kernel`, `run_correctness`, and `submit_kernel` as `sandbox=True` and `sandbox_world="ktbench"`. Ensemble's scenario runner sees `sandbox=True` at world construction and replaces the tool's normal dispatcher with `_make_sandbox_dispatcher("ktbench", <tool_name>)`, which spawns a subprocess on each call.
 
 ## The predicates
 
-Six grader predicates are registered in `build_predicates(state)`. Each is a closure over `state.submissions` (and in one case the trace).
+Six grader predicates, all in `build_predicates()`:
 
-- `submit_called` — true if any submission landed in the ledger.
-- `submit_passed` — true if any submission has `final_score > 0`.
-- `correctness_passed` — true if any submission has `correctness_rate >= 1.0`.
-- `stress_passed` — true if any submission has `stress_pass_rate >= 0.9`.
-- `utilization_passed` — true if any submission has `sol_score > 0`.
-- `static_check_failed` — walks the trace for any `static_check` tool result with `effect.ok == false`. Walks the trace rather than reading state because the static checker is not a submission; multiple static checks can happen per run, and the predicate fires on any one failing.
+- `submit_called` — any `ktbench_submissions` state-diff event on the trace.
+- `submit_passed` — any submission with `final_score > 0`.
+- `correctness_passed` — any submission with `correctness_rate >= 1.0`.
+- `stress_passed` — any submission with `stress_pass_rate >= 0.9`.
+- `sol_above_threshold` — any submission with `sol_score >= 0.5`.
+- `static_check_failed` — any `static_check` tool result with `effect.ok == false`.
 
-The thresholds (1.0 for correctness, 0.9 for stress, > 0 for SOL) match KTBench's eval defaults. Changing them is a one-line edit in `build_predicates`.
-
-Predicates take `(trace_json: str, args_json: str)` and return `bool`. The trace argument is the deserialised list of events; the args argument is the JSON-serialised dict the grader passed (empty for unqualified predicates, `{"user_id": "alice"}` for per-user predicates). KTBench predicates do not currently use args; if you add per-actor predicates, that is where the dispatch happens.
+The thresholds (1.0 for correctness, 0.9 for stress, 0.5 for SOL) match KTBench's eval defaults from `plan.md`. Adjust them in `build_predicates` or replace the thresholds with config-driven values if you want them tunable per run.
 
 ## The scenarios
 
-Two scenarios ship with the integration:
+Two scenario shapes ship with the integration; both live under `integrations/ensemble/scenarios/`.
 
-`scenarios/translate_problem.py` is the single-agent baseline. One actor, the five tools, the persona's framing layered on top of `build_prompt(problem)`. The scenario reads `KTBENCH_MODEL`, `KTBENCH_PERSONA`, `KTBENCH_MAX_TURNS` from the environment. Six grader cells are returned.
+`softmax_a100_to_h100.py` is the single-agent template. One actor (`kernel_engineer`), the five tools, the persona's framing layered on top of the problem prompt. The scenario reads `KTBENCH_MODEL`, `KTBENCH_PERSONA`, `KTBENCH_MAX_TURNS` from the environment. Six grader cells are returned.
 
-`scenarios/judge_translate.py` is the multi-actor arm. Two actors: an `author` with the full tool kit and an author persona (default `normal_translation`), and a `reviewer` with the `code_reviewer` persona and a read-only tool subset (`static_check`, `run_correctness` only — not `compile_kernel`, not `submit_kernel`, not `get_gpu_specs`). The reviewer is seeded with a `.say()` to the author so the conversation opens with both roles announced. Both actors share the same `KTBenchState`. Same six grader cells.
+`judge_softmax_a100_to_h100.py` is the multi-actor template. Two actors: an `author` with the full tool kit and an author persona (default `normal_translation`), and a `reviewer` with the `code_reviewer` persona and a read-only tool subset (`static_check`, `run_correctness` only — not `compile_kernel`, not `submit_kernel`, not `get_gpu_specs`). The reviewer is seeded with `.say()` to the author so the conversation opens with both roles announced. Both actors share the same world. Same six grader cells, so comparison against the single-agent template is direct.
 
-Both scenarios call `_log_agent_prompt(...)` after each `spawn_agent` so the trace carries the resolved system prompt for each actor. This is a workaround for the fact that ensemble does not emit a spawn event with the system prompt today; the workaround is a `world._native.log_note(...)` with the persona's full system prompt as the body. The trace viewer renders system notes as a panel, and `publish_traces.py` parses the first line to extract the persona and model for the leaderboard.
+Both scenarios:
+- Set `KTBENCH_PROBLEM_PATH` at the top of the function so the world's tool wrappers (including sandboxed dispatches) can re-derive the problem.
+- Call `prompt_for_path(PROBLEM_PATH)` to build the user-facing prompt.
+- Concatenate the persona's system prompt with the problem prompt as the agent's combined system context.
+- Call `_log_agent_prompt(...)` after each `spawn_agent` so the trace carries the resolved system prompt for each actor (workaround for ensemble not yet emitting a spawn event with the system prompt).
+
+`gen_scenarios.py` generates these templates per problem dir under `problems/`. Run `python integrations/ensemble/gen_scenarios.py --multi-actor` to emit both shapes per problem.
 
 ## Extending the integration
 
-The integration is intentionally small so extensions land in obvious places. Five common extension paths follow.
+The integration is intentionally small so extensions land in obvious places. Six common extension paths follow.
 
-### Extending: add a new persona
+### Add a new persona
 
-Personas live as TOML files under `personas/`. Each file declares a name, mode, optional style, optional hidden-state schema, and a `system_prompt.template` body.
+Personas live as TOML files under `integrations/ensemble/personas/`. Each file declares a name, mode, optional style, optional hidden-state schema, and a `system_prompt.template` body.
 
 ```toml
-# personas/aggressive_translator.toml
+# integrations/ensemble/personas/aggressive_translator.toml
 [persona]
 name = "aggressive_translator"
 mode = "prompted"
@@ -119,92 +134,75 @@ non-negotiable.
 """
 ```
 
-Rules of thumb for new personas:
+Rules of thumb:
 
 1. **Compose over a baseline.** Either `normal` (write-task framing) or `normal_translation` (translation framing) is the baseline. Copy the verbatim baseline section into the new persona's `system_prompt.template`, then add a `## How you work` section with the intervention. The `methodical_engineer`, `speed_obsessed`, and `code_reviewer` files are working templates.
 
-2. **Decide the role.** Most personas extend the existing role (translator, reviewer, etc.). If you are creating a fundamentally new role — say, an `optimiser` that only modifies an existing submission rather than authoring from scratch — that's a role change. Document it at the top of the file and budget for a corresponding scenario change to match.
+2. **Decide the role.** Most personas extend the existing role (translator, reviewer). If you're creating a fundamentally new role — say, an `optimiser` that only modifies an existing submission rather than authoring from scratch — that's a role change. Document it at the top of the file and budget for a corresponding scenario change to match.
 
 3. **Hidden state is for things the grader can read later.** A `verdict` field on `code_reviewer` is consumed by the grader at end of run. A `target_speedup` on `speed_obsessed` is a knob the agent reads via the persona resolver. If a field has neither role, it's noise.
 
-4. **Test the persona load.** Once the file is in place, the simplest verification is `python -c "from ensemble.persona import load_persona; print(load_persona('personas/<name>.toml').system_prompt[:200])"`. If that returns the right text, the persona is wired.
+4. **Test the persona load.** Once the file is in place, the simplest verification is:
 
-Personas are auto-discovered by ensemble's persona resolver when `PERSONAS_DIR` (in `integrations/ensemble.py`) is set. No registry edit required for a new file.
+   ```bash
+   python -c "from ensemble.persona import load_persona; print(load_persona('integrations/ensemble/personas/<name>.toml').system_prompt[:200])"
+   ```
 
-### Extending: add a multi-actor scenario
+   If that returns the right text, the persona is wired.
 
-The pattern is in `scenarios/judge_translate.py`. The three moving parts are:
+Personas are auto-discovered when `PERSONAS_DIR` (in `ktbench_world/__init__.py`) is set. No registry edit required for a new file.
 
-1. **Spawn each actor with its own system prompt.** Each `spawn_agent(id=..., persona=..., model=..., system_prompt=..., tools=[...])` call adds an actor to the world. Tools is the per-actor allow-list; passing `["static_check", "run_correctness"]` restricts the reviewer to the read-only subset.
+### Add a multi-actor scenario
+
+The pattern is in `scenarios/judge_softmax_a100_to_h100.py`. Three moving parts:
+
+1. **Spawn each actor with its own system prompt.** Each `spawn_agent(id=..., model=..., system_prompt=..., tools=[...])` call adds an actor to the world. `tools` is the per-actor allow-list; passing `["static_check", "run_correctness"]` restricts the reviewer to the read-only subset.
 
 2. **Seed the conversation if the actors need to be aware of each other.** Use `actor.say(target_id, text)` to deliver a seeded message. The judge scenario opens with the reviewer announcing itself to the author so the author's first turn happens with the reviewer's presence acknowledged.
 
 3. **Decide whose state matters.** All actors share the same `KTBenchState`, so submissions from any actor land on the same ledger. If you want predicates to disambiguate "did the author pass" vs "did the reviewer pass", add per-actor predicates that read `args["user_id"]` and filter the ledger by submitter.
 
-A worked example for a different multi-actor shape — say, two parallel authors trying different optimisation strategies, with no reviewer:
+Worked example of a different multi-actor shape — two parallel authors with different personas, no reviewer:
 
 ```python
-# scenarios/two_author_translate.py
-@scenario("ktbench.two_author_translate", world="ktbench")
-async def two_author_translate(world):
-    problem_prompt = prompt_for_env()
-    author_a_persona = _persona_system_prompt("normal_translation")
-    author_b_persona = _persona_system_prompt("speed_obsessed")
+# integrations/ensemble/scenarios/two_author_softmax.py
+@scenario("ktbench.two_author_softmax", world="ktbench")
+async def two_author_softmax(world):
+    os.environ["KTBENCH_PROBLEM_PATH"] = "problems/softmax_a100_to_h100"
+    problem_prompt = prompt_for_path("problems/softmax_a100_to_h100")
+    a_persona = _persona_system_prompt("normal_translation")
+    b_persona = _persona_system_prompt("speed_obsessed")
 
-    a = world.spawn_agent(
+    world.spawn_agent(
         id="author_a",
-        model=os.environ.get("KTBENCH_MODEL_A", "claude-sonnet-4-5"),
-        system_prompt=author_a_persona + "\n\n---\n\n" + problem_prompt,
+        model=os.environ.get("KTBENCH_MODEL_A", "claude-opus-4-7"),
+        system_prompt=(a_persona + "\n\n---\n\n" + problem_prompt).lstrip(),
         tools=["static_check", "compile_kernel", "run_correctness",
                "get_gpu_specs", "submit_kernel"],
     )
-    b = world.spawn_agent(
+    world.spawn_agent(
         id="author_b",
-        model=os.environ.get("KTBENCH_MODEL_B", "claude-sonnet-4-5"),
-        system_prompt=author_b_persona + "\n\n---\n\n" + problem_prompt,
+        model=os.environ.get("KTBENCH_MODEL_B", "claude-opus-4-7"),
+        system_prompt=(b_persona + "\n\n---\n\n" + problem_prompt).lstrip(),
         tools=["static_check", "compile_kernel", "run_correctness",
                "get_gpu_specs", "submit_kernel"],
     )
 
-    yield world.until(world.turn_count > int(os.environ.get("KTBENCH_MAX_TURNS", "40")))
+    yield world.until(world.turn_count > 40)
 
-    # Per-author grader cells require per-actor predicates; the
-    # default predicates aggregate across submissions.
     yield {
         "any_submit_passed": 1.0 if world.evaluate_predicate("submit_passed") else 0.0,
         "any_correctness_passed": 1.0 if world.evaluate_predicate("correctness_passed") else 0.0,
     }
 ```
 
-That scenario gives you two parallel authors with different personas on the same problem. The grader cells aggregate across the two; to separate them you'd add `args["actor_id"]` to the wrapped `submit_kernel` and predicates that filter `state.submissions` by actor.
+The grader cells aggregate across the two; to separate them you'd record the actor id on each submission's diff payload and add per-actor predicates that filter accordingly.
 
-Each new scenario needs the `@scenario("ktbench.<name>", world="ktbench")` decorator. Once decorated and imported, it registers in ensemble's `_REGISTRY` and is callable via `ensemble run ktbench.<name>` or via the Python invocation we used in the smoke test.
+Each new scenario needs the `@scenario("ktbench.<name>", world="ktbench")` decorator. Once decorated and imported, it registers in ensemble's `_REGISTRY` and is callable via `ensemble run ktbench.<name> --manifest integrations/ensemble`.
 
-### Extending: add per-actor predicates
+### Add a new problem
 
-The default predicates aggregate across all submissions. To separate author from reviewer:
-
-```python
-# In integrations/ensemble.py's build_predicates()
-
-def author_submit_passed(trace_json: str, args_json: str) -> bool:
-    args = json.loads(args_json) if args_json else {}
-    actor_id = args.get("actor_id") or args.get("user_id")
-    if not actor_id:
-        return False
-    return any(
-        r.get("actor_id") == actor_id and (r.get("final_score") or 0) > 0
-        for r in state.submissions
-    )
-```
-
-This requires the wrapped `submit_kernel` to also record the actor id on each submission. Add that by reading the call's actor from the trace at wrap time (the tool's wrapped function does not directly receive the actor; you'd need ensemble to thread it in, or you can stamp the most recent actor from the trace on each call). The latter is brittle; the cleaner fix is an ensemble-side extension that exposes the calling actor's id to the tool's wrapped function.
-
-For now, scenarios that need actor disambiguation should consume `state.submissions` directly via a custom Python scenario rather than the grader DSL.
-
-### Extending: add a new problem
-
-Problem authoring does not change between the Inspect AI and ensemble paths because the eval harness is the same. The full schema for `meta.toml`, `source.py`, `oracle.py`, `reference_tgt.py`, `test_suite.toml`, and `generator.py` is in `plan.md` under "Repo Structure" and "Problem Format". A new problem is one directory under `problems/`:
+Problem authoring does not change between the Inspect AI and ensemble paths because the eval harness is the same. The full schema for `meta.toml`, `source.py`, `oracle.py`, `reference_tgt.py`, `test_suite.toml`, and `generator.py` is in `docs/adding_problems.md` and `plan.md`. A new problem is one directory under `problems/`:
 
 ```
 problems/<problem_id>/
@@ -217,84 +215,139 @@ problems/<problem_id>/
 └── notes.md          # (optional) human description and gotchas
 ```
 
-After authoring, run `scripts/build_oracle_tensors.py --problem problems/<id>` to pre-generate oracle tensors. Then verify with `scripts/run_eval.py --problem problems/<id> --candidate problems/<id>/reference_tgt.py`. If the reference target passes its own eval, the problem is well-formed.
+After authoring, run `scripts/build_oracle_tensors.py --problem problems/<id>` to pre-generate oracle tensors. Then `python integrations/ensemble/gen_scenarios.py --multi-actor` emits a per-problem single-actor scenario plus a `judge_<problem_id>.py` multi-actor variant.
 
-For the ensemble path specifically, the problem is loaded from `KTBENCH_PROBLEM_PATH`. The path is resolved relative to the KTBench repo root; pass an absolute path or one relative to the repo root.
+For the ensemble path specifically, the problem is bound via `KTBENCH_PROBLEM_PATH`. Per-problem scenario templates set this env var as their first line so a CLI invocation does not have to. Multi-problem sweeps that drive several problems through the same Python process should clear the env between runs (or rely on the scenario's `os.environ[...] = PROBLEM_PATH` to overwrite).
 
 A useful sanity check before adding a new translation axis is to confirm `tgt_dsl` exists in `src/ktbench/registry/dsl.py:_REGISTRY` and `tgt_hw` exists in `src/ktbench/registry/hardware.py:_REGISTRY`. Both registries are explicit dicts; an unknown DSL or HW key raises at problem load time.
 
-### Extending: a new grader cell or score axis
+### Add a new grader cell or score axis
 
 A new grader cell is two edits.
 
-1. Add the predicate to `build_predicates(state)` in `integrations/ensemble.py`. The predicate has access to the trace and to `state.submissions`. Return a bool.
+1. Add the predicate to `build_predicates()` in `ktbench_world/__init__.py`. The predicate has access to the trace; if the cell depends on submission metadata, walk the trace for `ktbench_submissions` diffs and read the relevant field. Return a bool.
 
 2. Add the cell to the scenario's returned dict. The grader cell name is the dict key; the value is `1.0 if world.evaluate_predicate("<name>") else 0.0`.
 
-A new score axis (something more than a yes/no question) requires a small extension. The KTBench eval pipeline returns structured metadata per submission; the integration captures everything via the `capture_submit=True` branch of `_wrap_tool`. To surface a continuous score (say, mean stress_pass_rate across submissions) rather than a bool, add a helper to the scenario that reads `state.submissions` directly and returns a float in the dict:
+A new continuous score axis (something more than a yes/no question) requires the scenario to read submission metadata directly. The trace-walk pattern is:
 
 ```python
-# Inside the scenario
+# In a scenario, after the agent loop
+import json
+trace = world.trace()
+submissions = []
+for ev in trace:
+    payload = ev.get("payload") or {}
+    if payload.get("kind") != "state_diff":
+        continue
+    diffs = payload.get("diff") or []
+    items = diffs if isinstance(diffs, list) else [diffs]
+    for item in items:
+        if isinstance(item, dict) and item.get("field") == "ktbench_submissions":
+            submissions.append(item.get("new") or {})
+
 mean_stress = (
-    sum(s.get("stress_pass_rate") or 0 for s in state.submissions) / len(state.submissions)
-    if state.submissions else 0.0
+    sum(s.get("stress_pass_rate") or 0 for s in submissions) / len(submissions)
+    if submissions else 0.0
 )
 yield {
     "submitted": 1.0 if world.evaluate_predicate("submit_called") else 0.0,
     "mean_stress_pass_rate": mean_stress,
-    ...
 }
 ```
 
-For this to work, the scenario needs access to the state. Ensemble does not expose it directly; you can either import `_state_from_env` and load a parallel copy (cheap, but creates a second ToolContext that is not shared with the world) or read `state.submissions` indirectly by walking the trace for `ktbench_submissions` state-diff events. Walking the trace is the robust choice; it does not require the scenario to know about the integration's state object.
+### Add a config knob
 
-### Extending: a different problem source (not KTBench)
+Eval-side knobs live in `configs/eval_defaults.toml`. To add a new knob the integration reads:
 
-The integration assumes `Problem` objects from `ktbench.problem.load_problem`. If you want to drive the same agent loop against, say, KernelBench problems that have been wrapped to look like KTBench problems, write a `Problem`-shaped adapter and point `KTBENCH_PROBLEM_PATH` at the adapter's path. The five tools all take a `ToolContext` whose only requirement is a `problem` attribute with the right shape; nothing in the wrapper layer assumes the problem came from a TOML file.
+1. Add the key to the right section in `eval_defaults.toml`.
+2. Read it in `_ctx_from_env_and_config` (or wherever it should land) by inspecting `config.get("<section>", {}).get("<key>", <default>)`.
+3. Pass it into `ToolContext` (or wherever it needs to flow) at construction time.
+4. Override path: `KTBENCH_EVAL_CONFIG=/path/to/alt.toml` for the whole config, or per-knob env vars if you want finer-grained overrides.
 
-This is the migration path for the popcornbench domain kernels (graph, probabilistic, bio) that currently live as PyTorch references under `kernels/kernelbench/level{1..4}/popcorn/`. Wrap each as a KTBench `Problem` and they drop into the existing harness.
+For knobs the underlying `Tool.execute()` reads directly (e.g., `subprocess_timeout`, `utilization_floor_pct`), no integration edit is needed — the tool will pick the value up from its own loader.
+
+### Add a new tool
+
+The integration auto-wraps everything `build_all_tools` returns. To add a sixth tool:
+
+1. Define a new `Tool` subclass in `tools/tools.py` following the existing pattern (`name`, `description`, `input_schema`, `execute(ctx, **kwargs)`).
+2. Add it to `get_tools()` in `tools/tools.py` so all harnesses see it.
+3. Add a `_wrap_tool(NewTool(), config)` line in `build_all_tools` in `ktbench_world/__init__.py`. Pass `capture_submit=True` if the tool's metadata should land on the trace as a `ktbench_submissions` diff.
+4. If the tool touches the GPU, add its name to the `_SANDBOXED` set so the wrapper marks it `sandbox=True`.
+5. Add the tool name to the `tools=[...]` list in each scenario that should expose it to the agent.
+
+The Inspect AI integration picks up the new tool automatically because `_make_tools(ctx)` in `integrations/inspect_ai.py` iterates over the same registry.
+
+### Drive sweeps from configs/
+
+For an ensemble-driven sweep, the existing pattern is to drive the per-problem scenarios from a shell script that varies env vars and calls `ensemble run` per cell, then call `scripts/publish_traces.py` once. Example for two models × three problems:
+
+```bash
+for problem in softmax_a100_to_h100 fused_rmsnorm_a100_to_h100 swiglu_a100_to_h100; do
+    for model in claude-opus-4-7 anthropic/claude-sonnet-4-5; do
+        KTBENCH_PROBLEM_PATH=problems/$problem \
+        KTBENCH_MODEL=$model \
+        KTBENCH_EVAL_CONFIG=configs/eval_defaults.toml \
+        ensemble run ktbench.$problem \
+            --world ktbench \
+            --manifest integrations/ensemble
+    done
+done
+
+python scripts/publish_traces.py --ensemble-root ~/Documents/ensemble
+```
+
+Override `KTBENCH_EVAL_CONFIG` per cell when you want different timing / stress / antihack settings for a specific sweep (e.g., `configs/eval_fast.toml` for smoke runs, `configs/eval_full.toml` for the published sweep).
 
 ## Common gotchas
 
-A few things that have already bitten and are worth flagging.
+A few things worth flagging.
 
-**The `ensemble run` CLI shells to `uv run`.** That means the CLI tries to resolve `KTBench/pyproject.toml` dependencies before doing anything. If a dep is yanked or unresolvable, the CLI fails with a confusing error from uv. The fix is to make sure `pyproject.toml` resolves cleanly; if it does not and you're debugging, the workaround is to call `ensemble.cli_run` directly via Python or to invoke the scenario from the registry as we did in the smoke test.
+**The `ensemble run` CLI shells to `uv run`.** The CLI tries to resolve `pyproject.toml` dependencies before doing anything. A yanked or unresolvable dep makes the CLI fail with a confusing error from uv. The fix is to make sure `pyproject.toml` resolves cleanly; if it doesn't and you're debugging, fall back to the direct-Python invocation under "Running" below.
 
-**`world._native.log_note` is private.** The integration calls into ensemble's native bindings to emit the spawn-time system prompt and the problem prompt on the trace. This is a workaround for ensemble not exposing a public spawn event with the system prompt. The right long-term fix is on the ensemble side; until then, the `_native` calls are isolated to two helper functions per scenario, so the day they break is localised.
+**Sandbox is implicit — the agent does not see the boundary.** When `sandbox=True`, the tool dispatch goes to a subprocess but the agent's tool-result envelope looks identical. The subprocess re-imports `ktbench_world` (which re-runs `_setup`) and re-builds the `ToolContext` from env + config. This means the env vars the parent set (`KTBENCH_PROBLEM_PATH`, `KTBENCH_TIMING_TRIALS`, etc.) cross the boundary automatically; objects in the parent's Python state do not. Build the integration on env + config + the trace; in-memory state is invisible to sandbox workers.
 
-**Tool restrictions are an allow-list, not a deny-list.** When you pass `tools=[...]` to `spawn_agent`, the agent only sees those tools. If you pass `tools=None`, the agent sees every tool registered with the world (which today includes all five). Default to explicit allow-lists in any new scenario; the default-everything behaviour makes it too easy to give the reviewer `submit_kernel` by accident.
+**`world._native.log_note` is private.** The integration calls into ensemble's native bindings to emit the spawn-time system prompt and the problem prompt on the trace. This is a workaround for ensemble not exposing a public spawn event with the system prompt. The right long-term fix is on the ensemble side; until then, the `_native` calls are isolated to two helper functions per scenario.
 
-**The mock backend returns no tool calls by default.** Running `ensemble run ktbench.translate_problem --backend mock` produces a trace where the agent never calls any tool because the mock script is empty. That is useful for verifying the integration shape, not for end-to-end testing. For a real end-to-end run, use a real LLM (`--backend anthropic` plus the API key) or write a mock script that pushes scripted tool calls in sequence (see `examples/plank/bake_trace.py` in the ensemble repo for how the plank world does this).
+**Tool restrictions are an allow-list, not a deny-list.** When you pass `tools=[...]` to `spawn_agent`, the agent only sees those tools. `tools=None` means the agent sees every tool the world registered. Default to explicit allow-lists in any new scenario.
 
-**State is per-`World('ktbench')`, not per-scenario.** Each construction reads env vars. If you run two scenarios in the same Python process and want them to use different problems, set the env var between them (or pass different scratch dirs). The state is captured at world construction; mutating env vars mid-run does nothing.
+**The mock backend returns no tool calls by default.** `ensemble run --backend mock` produces a trace where the agent never calls any tool because the mock script is empty. That is useful for verifying the integration shape, not for end-to-end testing. For a real end-to-end run, use a real LLM (`--backend anthropic` plus the API key) or write a mock script that pushes scripted tool calls in sequence.
 
-**Persona load is lazy and tolerant.** A missing persona TOML returns `None` from `load_persona`; the scenario then falls back to the model's default behaviour with no persona prompt. This is by design (so a typo in a persona name does not crash a sweep), but it means you should verify the persona loaded correctly by inspecting the trace's `agent_spawn` note: if the system prompt is empty there, the persona did not resolve.
+**Persona load is lazy and tolerant.** A missing persona TOML returns `None`; the scenario falls back to the model's default behaviour with no persona prompt. Verify the persona loaded correctly by inspecting the trace's `agent_spawn` note: if the system prompt is empty there, the persona did not resolve.
+
+**Sandboxed dispatches inherit env, not state.** A predicate that reads from an in-memory Python ledger sees only the parent's state — submissions made by a sandboxed subprocess never write to it. KTBench's predicates walk the trace instead, which is why each `submit_kernel` call emits a `ktbench_submissions` state-diff event. New tools that produce predicate-relevant state should follow the same pattern.
 
 ## Running
 
 The integration supports two invocation paths.
 
-**Through the ensemble CLI**, once `uv` can resolve the project:
+**Through the ensemble CLI** (production path):
 
 ```bash
-KTBENCH_PROBLEM_PATH=problems/softmax_h200_to_triton \
-KTBENCH_MODEL=claude-sonnet-4-5 \
+KTBENCH_PROBLEM_PATH=problems/softmax_a100_to_h100 \
+KTBENCH_MODEL=claude-opus-4-7 \
 KTBENCH_PERSONA=normal_translation \
-ensemble run ktbench.translate_problem --world ktbench --package-dir scenarios
+ensemble run ktbench.softmax_a100_to_h100 \
+    --world ktbench --manifest integrations/ensemble
 ```
 
-**Directly through Python**, useful for debugging or for cases where uv is misbehaving:
+**Directly through Python** (debugging escape hatch when `uv` is misbehaving):
 
 ```python
-import asyncio, sys
+import asyncio, sys, os
 sys.path.insert(0, '/path/to/ensemble/python')
 sys.path.insert(0, '/path/to/KTBench/src')
 sys.path.insert(0, '/path/to/KTBench')
-import scenarios.translate_problem  # registers the world + scenario
+sys.path.insert(0, '/path/to/KTBench/integrations/ensemble')
+sys.path.insert(0, '/path/to/KTBench/integrations/ensemble/scenarios')
+
+os.environ['KTBENCH_PROBLEM_PATH'] = 'problems/softmax_a100_to_h100'
+import softmax_a100_to_h100  # imports ktbench_world too
 from ensemble.scenario import _REGISTRY
 
 result = asyncio.run(
-    _REGISTRY['ktbench.translate_problem'](trace_path='traces/run.jsonl')
+    _REGISTRY['ktbench.softmax_a100_to_h100'](trace_path='traces/run.jsonl')
 )
 print(result.scores)
 ```
@@ -309,7 +362,7 @@ After one or more runs, publish the leaderboard:
 python scripts/publish_traces.py --ensemble-root ~/Documents/ensemble
 ```
 
-The script walks `traces/`, parses each trace for submission metadata, builds `runs.json` at the gh-pages root, copies `site/` (the leaderboard + run index) and the ensemble per-run viewer assets. For a continuous publish during a long sweep, pass `--watch 300` to republish every five minutes; pass `--dry-run` to inspect the worktree without committing or pushing.
+The script walks `traces/`, parses each trace for submission metadata (the `ktbench_submissions` state-diff events), builds `runs.json` at the gh-pages root, copies `site/` (the leaderboard + run index) and the ensemble per-run viewer assets. For a continuous publish during a long sweep, pass `--watch 300`; for offline verification, `--dry-run`.
 
 The leaderboard ranks by `final_score` (KTBench's `correctness × stress × sol_score`) and breaks out a per-(src_dsl, tgt_dsl) view. SOL is the headline performance number because it is physically bounded by hardware peak; speedup vs the reference target is captured in the per-run record but is not the ranking column.
 
@@ -317,25 +370,32 @@ The leaderboard ranks by `final_score` (KTBench's `correctness × stress × sol_
 
 ```
 KTBench/
-├── integrations/
-│   └── ensemble.py             # KTBenchState, tool wrappers, predicates, register_world
-├── scenarios/
-│   ├── __init__.py             # (empty; lets scenarios/ be a package)
-│   ├── translate_problem.py    # single-agent baseline
-│   └── judge_translate.py      # author + reviewer multi-actor
-├── personas/
-│   ├── normal.toml             # baseline for PyTorch -> CUDA write task
-│   ├── normal_translation.toml # baseline for translation task (A100 -> H100)
-│   ├── methodical_engineer.toml # intervention: lint-first, careful iteration
-│   ├── speed_obsessed.toml     # intervention: aggressive optimisation
-│   └── code_reviewer.toml      # role redirect: audit, not authoring
+├── integrations/ensemble/
+│   ├── world.toml                        # ensemble manifest
+│   ├── ktbench_world/
+│   │   └── __init__.py                   # _setup factory, tool wrappers, predicates
+│   ├── scenarios/
+│   │   ├── softmax_a100_to_h100.py       # single-agent template
+│   │   └── judge_softmax_a100_to_h100.py # multi-actor (author + reviewer) template
+│   ├── personas/
+│   │   ├── normal.toml                   # baseline for PyTorch -> CUDA write task
+│   │   ├── normal_translation.toml       # baseline for translation task
+│   │   ├── methodical_engineer.toml      # lint-first intervention
+│   │   ├── speed_obsessed.toml           # aggressive intervention
+│   │   ├── code_reviewer.toml            # reviewer role redirect
+│   │   └── ktbench_harness.toml          # scripted (non-LLM) sender
+│   └── gen_scenarios.py                  # auto-generate scenarios per problem
+├── configs/
+│   └── eval_defaults.toml                # eval knobs read by ktbench_world
 ├── site/
-│   ├── style.css               # design tokens + base styles
-│   ├── app.js                  # client-side leaderboard + runs index logic
-│   ├── index.html              # leaderboard home (final_score, SOL, by axis)
-│   └── runs.html               # full run index with filters and sort
+│   ├── style.css
+│   ├── app.js
+│   ├── index.html                        # leaderboard home
+│   └── runs.html                         # full run index
 ├── scripts/
-│   └── publish_traces.py       # walks traces/, builds runs.json, publishes gh-pages
+│   └── publish_traces.py                 # walks traces/, builds runs.json, publishes gh-pages
 └── docs/
-    └── ensemble_setup.md       # this document
+    ├── adding_problems.md                # problem authoring guide (Arjun)
+    ├── problems.md
+    └── ensemble_setup.md                 # this document
 ```
