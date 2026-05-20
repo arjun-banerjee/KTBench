@@ -9,7 +9,7 @@ subprocess_timeout  = 300            # seconds per eval subprocess
 [correctness]
 # Both structured AND stress cases generate tensor values with this RNG family.
 # Values are ALWAYS freshly sampled — hardcoded outputs cannot pass.
-value_rng_seed_base = 0xKTB         # hex, per-case seed = seed_base XOR case_index
+value_rng_seed_base = 0x4B5442      # hex ("KTB" in ASCII); per-case seed = seed_base XOR case_index
 
 [stress]
 num_trials       = 30
