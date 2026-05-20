@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KTBench runs</title>
+  <link rel="stylesheet" href="https://use.typekit.net/bsk0vur.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header class="site">
+      <a class="wordmark" href="./">KTBench</a>
+      <nav>
+        <a href="./">leaderboard</a>
+        <a href="runs.html" class="active">runs</a>
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+      </nav>
+    </header>
+
+    <h1>Published runs</h1>
+    <p class="muted">Every published trace, most recent first. Click a row's <em>trace</em> link to open the per-run viewer.</p>
+
+    <div class="filters" id="filters">
+      <label>model
+        <select data-filter="model"><option value="">all</option></select>
+      </label>
+      <label>tgt dsl
+        <select data-filter="tgt_dsl"><option value="">all</option></select>
+      </label>
+      <label>src dsl
+        <select data-filter="src_dsl"><option value="">all</option></select>
+      </label>
+      <label>persona
+        <select data-filter="persona"><option value="">all</option></select>
+      </label>
+      <label>scenario
+        <select data-filter="scenario"><option value="">all</option></select>
+      </label>
+    </div>
+
+    <div class="table-scroll">
+      <table class="data" id="runs">
+        <thead>
+          <tr>
+            <th data-sortable="true" data-key="timestamp">timestamp</th>
+            <th data-sortable="true" data-key="scenario">scenario</th>
+            <th data-sortable="true" data-key="model">model</th>
+            <th data-sortable="true" data-key="persona">persona</th>
+            <th data-sortable="true" data-key="problem_id">problem</th>
+            <th>axis</th>
+            <th data-sortable="true" data-key="outcome">outcome</th>
+            <th data-sortable="true" data-key="final_score" class="numeric">final</th>
+            <th data-sortable="true" data-key="sol_score" class="numeric">SOL</th>
+            <th data-sortable="true" data-key="cost_gpu_seconds" class="numeric">gpu-seconds</th>
+            <th>trace</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <footer class="site">
+      <p>
+        <a href="./">back to leaderboard</a>
+        &middot;
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+        &middot;
+        <span id="generated-at" class="muted"></span>
+      </p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    KTBenchSite.renderRunsIndex();
+  </script>
+</body>
+</html>
