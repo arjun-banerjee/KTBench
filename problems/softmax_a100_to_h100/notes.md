@@ -2,7 +2,7 @@
 
 ## Description
 Row-wise softmax over a 2D tensor [N, D] using the Milakov-Norrie online algorithm
-for numerical stability. Each row is independent — no cross-row communication needed.
+for numerical stability. Each row is independent - no cross-row communication needed.
 
 ## Translation Challenges
 - **Tiling strategy**: The CUDA version uses one warp per row with a warp-level
@@ -16,7 +16,7 @@ for numerical stability. Each row is independent — no cross-row communication 
   (`mask = cols < D`), not just power-of-2 sizes.
 
 ## Known Gotchas
-- `tl.exp` operates in fp32 by default — no explicit cast needed.
+- `tl.exp` operates in fp32 by default - no explicit cast needed.
 - `BLOCK_D` must be a `tl.constexpr`; choose it as `triton.next_power_of_2(D)`.
 - For very large D (>16384), a multi-pass approach may be needed.
 

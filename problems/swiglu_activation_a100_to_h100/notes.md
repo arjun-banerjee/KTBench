@@ -1,4 +1,4 @@
-# SwiGLU Activation — CUDA A100 → CUDA H100
+# SwiGLU Activation - CUDA A100 → CUDA H100
 
 **Op:** `silu(gate) * up`, where the input is `x = concat(gate, up)` along the last dim.
 
@@ -22,10 +22,10 @@
 ## Translation hooks
 
 A candidate aiming to clear a meaningful SOL fraction on H100 has plenty
-of room — the source kernel is intentionally naive (one thread per
+of room - the source kernel is intentionally naive (one thread per
 element, scalar fp16 → fp32 → fp16). Useful Hopper-leaning rewrites:
 
-- Vectorised loads/stores (`half2`, `__nv_bfloat162`, `int4`) — this op
+- Vectorised loads/stores (`half2`, `__nv_bfloat162`, `int4`) - this op
   is bandwidth-bound.
 - Coalesced access patterns with one block per row + one thread per
   vector lane.

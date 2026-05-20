@@ -36,7 +36,7 @@ D = 8192
 
 [[cases]]
 id    = "nonpow2"
-desc  = "Off-power-of-two — breaks naive tiling"
+desc  = "Off-power-of-two - breaks naive tiling"
 dtype = "fp16"
 [cases.shapes]
 N = 257

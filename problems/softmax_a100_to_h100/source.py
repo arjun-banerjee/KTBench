@@ -96,7 +96,7 @@ class ModelNew(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = torch.empty_like(x)
-        # Zero the output buffer — prevents stale-memory exploits
+        # Zero the output buffer - prevents stale-memory exploits
         y.zero_()
         _get_ext().softmax_forward(x.contiguous(), y)
         return y

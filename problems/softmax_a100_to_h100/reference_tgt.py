@@ -1,6 +1,6 @@
 """
 Handwritten reference: online softmax in Triton (H200).
-This is the performance baseline — candidates are scored relative to this.
+This is the performance baseline - candidates are scored relative to this.
 """
 import torch
 import torch.nn as nn

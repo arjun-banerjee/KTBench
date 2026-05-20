@@ -3,7 +3,7 @@ Input generator for softmax_h200_to_triton.
 
 Softmax forward: input [N, D] float → output [N, D] float.
 
-Values are always freshly sampled from rng — hardcoded outputs cannot pass.
+Values are always freshly sampled from rng - hardcoded outputs cannot pass.
 """
 
 import numpy as np

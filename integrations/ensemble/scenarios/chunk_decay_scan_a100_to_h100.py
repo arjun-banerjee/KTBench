@@ -58,12 +58,12 @@ async def chunk_decay_scan_a100_to_h100(world):
 
     # Scheduler quiesces without an inbound message at startup. A
     # harness user delivers a one-shot kickoff and then stays silent.
-    # The kickoff intentionally does NOT prescribe a workflow — the
+    # The kickoff intentionally does NOT prescribe a workflow - the
     # model discovers its own path.
     harness = world.spawn_user(id="harness", persona="ktbench_harness", model="user-model")
     harness.say(
         "kernel_engineer",
-        "Begin. Your score is 0 unless submit_kernel is called — that is "
+        "Begin. Your score is 0 unless submit_kernel is called - that is "
         "the only event that counts.",
     )
 

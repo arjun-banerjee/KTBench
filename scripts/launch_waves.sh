@@ -18,10 +18,15 @@ source .venv/bin/activate
 export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://tejas-mohrgcfh-eastus2.cognitiveservices.azure.com/openai/v1}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep TEJAS_AZURE_KEY .env | cut -d= -f2)}"
 export KTBENCH_MODEL="${KTBENCH_MODEL:-gpt-5.5}"
-export KTBENCH_MAX_TURNS="${KTBENCH_MAX_TURNS:-80}"
+export KTBENCH_MAX_TURNS="${KTBENCH_MAX_TURNS:-300}"
 # Sandboxed compile_kernel can run nvcc for 30-90s on a fresh LLM-emitted
 # kernel; default 60s quiescence kills the run mid-compile. Bump.
 export ENSEMBLE_QUIESCENCE_MS="${ENSEMBLE_QUIESCENCE_MS:-600000}"
+# Ensemble's per-turn tool-call cap defaults to 8, which is too tight
+# for iterative kernel work (the model commonly burns 4-6 on compile +
+# correctness before submitting). 50 gives plenty of headroom and the
+# until_predicate halts the moment a submission lands anyway.
+export ENSEMBLE_MAX_TOOL_TURNS="${ENSEMBLE_MAX_TOOL_TURNS:-300}"
 
 PROBLEMS=(
   causal_conv1d_silu_a100_to_h100
@@ -36,7 +41,7 @@ PROBLEMS=(
 
 run_wave() {
   local wave="$1"           # e.g. "A" or "B_judge"
-  local scenario_prefix="$2" # e.g. "ktbench" or "ktbench.judge"
+  local scenario_kind="$2"  # "" for single-agent, "judge_" for multi-actor
   local logdir="/tmp/ktbench_waves/${wave}"
   mkdir -p "$logdir"
 
@@ -44,7 +49,7 @@ run_wave() {
   for i in "${!PROBLEMS[@]}"; do
     local gpu=$i
     local problem="${PROBLEMS[$i]}"
-    local scenario="${scenario_prefix}.${problem}"
+    local scenario="ktbench.${scenario_kind}${problem}"
     local log="${logdir}/${problem}.log"
     echo "[wave_${wave}] gpu=${gpu} ${scenario} -> ${log}"
     CUDA_VISIBLE_DEVICES=$gpu \
@@ -68,9 +73,9 @@ run_wave() {
 }
 
 echo "==== Wave A: single-agent baselines ===="
-run_wave "A" "ktbench"
+run_wave "A" ""
 
 echo "==== Wave B: judge (author + reviewer) ===="
-run_wave "B_judge" "ktbench.judge"
+run_wave "B_judge" "judge_"
 
 echo "==== Both waves complete ===="

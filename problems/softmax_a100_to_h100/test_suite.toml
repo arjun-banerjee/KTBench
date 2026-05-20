@@ -11,7 +11,7 @@ D = 256
 
 [[cases]]
 id    = "large_D"
-desc  = "wide rows — reduction over large D"
+desc  = "wide rows - reduction over large D"
 dtype = "fp16"
 [cases.shapes]
 N = 512
@@ -27,7 +27,7 @@ D = 64
 
 [[cases]]
 id    = "nonpow2"
-desc  = "non-power-of-2 — breaks naive tiling"
+desc  = "non-power-of-2 - breaks naive tiling"
 dtype = "fp16"
 [cases.shapes]
 N = 1000
@@ -51,7 +51,7 @@ D = 1024
 
 [[cases]]
 id    = "extreme_D"
-desc  = "very wide row — tests register pressure"
+desc  = "very wide row - tests register pressure"
 dtype = "fp16"
 [cases.shapes]
 N = 32
@@ -59,7 +59,7 @@ D = 16384
 
 [[cases]]
 id    = "unit"
-desc  = "single element — numerical edge case"
+desc  = "single element - numerical edge case"
 dtype = "fp16"
 [cases.shapes]
 N = 1
