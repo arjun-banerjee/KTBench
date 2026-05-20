@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ktbench"
@@ -13,11 +13,12 @@ dependencies = [
     "tomli>=2.0; python_version < '3.11'",
     "pydantic>=2.0",
     "rich>=13",
+    "neuronx-cc>=1.0.post1",
+    "ensemble",
 ]
 
 [project.optional-dependencies]
 triton     = ["triton>=2.3"]
-nki        = ["neuronxcc"]
 llm        = ["openai>=1.30"]
 dev        = ["pytest", "pytest-timeout"]
 inspect    = ["inspect-ai>=0.3"]
@@ -29,3 +30,6 @@ autogen    = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
 [tool.setuptools.packages.find]
 where = ["src", "."]
 include = ["ktbench*", "tools*"]
+
+[tool.uv.sources]
+ensemble = { path = "../ensemble" }
