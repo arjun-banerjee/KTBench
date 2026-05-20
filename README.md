@@ -22,7 +22,8 @@ Existing kernel benchmarks (KernelBench, robust-kbench) evaluate optimization fr
 ```bash
 git clone https://github.com/arjun-banerjee/KTBench.git
 cd KTBench
-pip install -e ".[triton]"   # add [nki] for Trainium support
+pip install -e ".[triton]"         # add [nki] for Trainium support
+pip install -e ".[triton,llm]"     # also install openai SDK for the LLM agent
 ```
 
 Requires Python 3.11+, PyTorch 2.3+, CUDA 12.x.
@@ -42,6 +43,32 @@ python scripts/run_eval.py \
 ```
 
 The script runs the full 6-stage pipeline and prints a JSON result summary. Exit code 0 if the candidate compiles and passes all correctness cases; 1 otherwise.
+
+### Generate a translation with an LLM
+
+```bash
+# OpenAI (Responses API — supports reasoning models like o3)
+OPENAI_API_KEY=sk-... python scripts/run_agent.py \
+    --problem problems/softmax_h200_to_triton \
+    --model o3 --reasoning-effort medium \
+    --out candidate.py --eval --device 0
+
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=... python scripts/run_agent.py \
+    --problem problems/softmax_h200_to_triton \
+    --model gpt-4.1 --provider azure \
+    --base-url https://my-resource.cognitiveservices.azure.com/openai/v1/ \
+    --out candidate.py --eval
+
+# xAI Grok (Chat Completions)
+XAI_API_KEY=... python scripts/run_agent.py \
+    --problem problems/softmax_h200_to_triton \
+    --model grok-3 --provider grok \
+    --out candidate.py --eval
+```
+
+`--eval` runs the full 6-stage pipeline after generation and exits 0 on success.
+Omit `--eval` to just write the candidate without running the evaluator.
 
 ### Add a new problem
 
@@ -67,14 +94,19 @@ python scripts/build_oracle_tensors.py \
 
 ```python
 from ktbench import load_problem, eval_translation, build_prompt
+from ktbench.llm import make_client, TranslationAgent
 
 problem = load_problem("problems/softmax_h200_to_triton")
 
-# Build the prompt to send to a model
+# Build the prompt manually (e.g. to call your own model)
 prompt = build_prompt(problem)
 
+# Or use the built-in agent (requires openai package + API key)
+client = make_client(api_key_env="OPENAI_API_KEY")
+agent  = TranslationAgent(client=client, model="gpt-4o", problem=problem)
+candidate_src = agent.generate()
+
 # Evaluate a candidate
-candidate_src = open("my_kernel.py").read()
 result = eval_translation(candidate_src, problem, device=0, verbose=True)
 
 print(result.final_score)      # correctness × stress_pass_rate × SOL
@@ -300,9 +332,46 @@ Only `ModelNew().forward(*inputs)` is called by the grader. Helper functions and
 
 | Script | Purpose |
 |---|---|
+| `scripts/run_agent.py` | Generate a translation via LLM then optionally evaluate |
 | `scripts/run_eval.py` | Evaluate one candidate against one problem |
 | `scripts/add_problem.py` | Scaffold a new problem directory |
 | `scripts/build_oracle_tensors.py` | Pre-compute oracle outputs for structured cases |
+
+### `run_agent.py`
+
+```
+python scripts/run_agent.py --problem PATH --model MODEL [options]
+
+  --problem            Path to problem directory
+  --model              Model name, e.g. gpt-4o, o3, gpt-4.1, grok-3
+
+Provider (pick one preset or use --provider custom for full control):
+  --provider           openai (default) | azure | grok | custom
+  --api-key-env        Env var for API key (default per provider)
+  --base-url           API base URL (required for azure)
+  --api-kind           responses | chat  (default per provider)
+  --reasoning-effort   minimal | low | medium | high  (Responses API only)
+
+Output:
+  --out FILE           Write candidate to FILE (default: print to stdout)
+  --retries N          API retry budget (default: 3)
+
+Evaluation (optional):
+  --eval               Run the full evaluator on the generated candidate
+  --device N           CUDA device index (default: 0)
+  --seed N             RNG seed for evaluation
+  --json-out FILE      Write evaluation JSON to FILE
+  --verbose
+```
+
+**Provider table:**
+
+| `--provider` | API key env var | API kind | Base URL |
+|---|---|---|---|
+| `openai` | `OPENAI_API_KEY` | Responses | (OpenAI default) |
+| `azure` | `AZURE_OPENAI_API_KEY` | Responses | required via `--base-url` |
+| `grok` | `XAI_API_KEY` | Chat | `https://api.x.ai/v1` |
+| `custom` | set via `--api-key-env` | set via `--api-kind` | set via `--base-url` |
 
 ### `run_eval.py`
 
@@ -363,6 +432,10 @@ KTBench/
 │       ├── notes.md
 │       └── oracle_tensors/
 ├── src/ktbench/
+│   ├── llm/
+│   │   ├── client.py            # make_client() — OpenAI / Azure / Grok
+│   │   ├── utils.py             # retry backoff, usage dict, code extraction
+│   │   └── agent.py             # TranslationAgent — prompt → LLM → ModelNew src
 │   ├── registry/
 │   │   ├── hardware.py          # HW specs and SOL computation
 │   │   └── dsl.py               # DSL loading per backend
@@ -377,6 +450,7 @@ KTBench/
 │   ├── prompt.py                # prompt construction (no shapes exposed)
 │   └── score.py                 # final score and leaderboard row
 ├── scripts/
+│   ├── run_agent.py             # LLM → candidate → (optional) eval
 │   ├── run_eval.py
 │   ├── add_problem.py
 │   └── build_oracle_tensors.py

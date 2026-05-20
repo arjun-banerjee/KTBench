@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 triton = ["triton>=2.3"]
 nki    = ["neuronxcc"]
+llm    = ["openai>=1.30"]
 dev    = ["pytest", "pytest-timeout"]
 
 [tool.setuptools.packages.find]
