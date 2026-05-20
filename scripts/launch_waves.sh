@@ -15,9 +15,30 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://tejas-mohrgcfh-eastus2.cognitiveservices.azure.com/openai/v1}"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep TEJAS_AZURE_KEY .env | cut -d= -f2)}"
-export KTBENCH_MODEL="${KTBENCH_MODEL:-gpt-5.5}"
+# Endpoint + key for the kernel-engineer agent's backend. Defaults to
+# tejas-eastus2 (gpt-5.5); set KTBENCH_AZURE=thava for gpt-5.4 on
+# thava-openai, or KTBENCH_AZURE=popcorn for the priority pool.
+case "${KTBENCH_AZURE:-tejas}" in
+  tejas)
+    export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://tejas-mohrgcfh-eastus2.services.ai.azure.com/openai/v1}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep TEJAS_AZURE_KEY .env | cut -d= -f2)}"
+    export KTBENCH_MODEL="${KTBENCH_MODEL:-gpt-5.5}"
+    ;;
+  thava)
+    export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://thava-openai.services.ai.azure.com/openai/v1}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep THAVA_AZURE_KEY .env | cut -d= -f2)}"
+    export KTBENCH_MODEL="${KTBENCH_MODEL:-gpt-5.4}"
+    ;;
+  popcorn)
+    export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://popcorn-centralus-resource.services.ai.azure.com/openai/v1}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep POPCORN_CENTRAL_AZURE_KEY .env | cut -d= -f2)}"
+    export KTBENCH_MODEL="${KTBENCH_MODEL:-gpt-5.5}"
+    ;;
+  *)
+    echo "unknown KTBENCH_AZURE='${KTBENCH_AZURE}'; expected tejas|thava|popcorn" >&2
+    exit 1
+    ;;
+esac
 export KTBENCH_MAX_TURNS="${KTBENCH_MAX_TURNS:-300}"
 # Sandboxed compile_kernel can run nvcc for 30-90s on a fresh LLM-emitted
 # kernel; default 60s quiescence kills the run mid-compile. Bump.
