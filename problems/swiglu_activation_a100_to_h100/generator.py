@@ -23,14 +23,8 @@ def make_inputs(
     rng: np.random.Generator,
     device: torch.device,
 ) -> list:
-    # KTBench's loader wraps structured-case scalars in single-element
-    # lists for forward compatibility with per-case shape sweeps; stress
-    # passes raw ints. Accept both.
-    def _scalar(v):
-        return v[0] if isinstance(v, list) else v
-
-    N = _scalar(shapes["N"])
-    D = _scalar(shapes["D"])
+    N = shapes["N"]
+    D = shapes["D"]
     dt = DTYPE_MAP[dtype]
 
     scale = float(rng.uniform(0.5, 3.0))

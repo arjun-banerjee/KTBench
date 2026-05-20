@@ -46,7 +46,7 @@ from ensemble.persona import load_persona
 
 
 PROBLEM_PATH = "{problem_path}"
-MAX_TURNS    = {max_turns}
+MAX_TURNS    = int(os.environ.get("KTBENCH_MAX_TURNS", "{max_turns}"))
 
 
 def _log_agent_prompt(world, agent_id, persona_name, model):
@@ -87,6 +87,16 @@ async def {func_name}(world):
     )
     _log_agent_prompt(world, "kernel_engineer", persona_name, model)
     world._native.log_note(f"problem_prompt:\\n{{problem_prompt}}")
+
+    # Without a queued inbound message the scheduler quiesces before the
+    # agent's first turn; a synthetic harness user delivers a one-shot
+    # kickoff so the loop actually starts.
+    harness = world.spawn_user(id="harness", persona="ktbench_harness", model="user-model")
+    harness.say(
+        "kernel_engineer",
+        "Begin. Use the tools to iterate (compile_kernel, run_correctness, get_gpu_specs) "
+        "and call submit_kernel once with your final ModelNew.",
+    )
 
     yield world.until(world.turn_count > MAX_TURNS)
 

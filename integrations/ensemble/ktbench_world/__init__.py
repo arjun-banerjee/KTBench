@@ -74,9 +74,16 @@ PACKAGE_DIR = Path(__file__).resolve().parent.parent
 PERSONAS_DIR = PACKAGE_DIR / "personas"
 DEFAULT_EVAL_CONFIG = _REPO / "configs" / "eval_defaults.toml"
 
-# Tools that touch the GPU. Sandboxed so a CUDA-fatal candidate kills
-# only its worker.
-_SANDBOXED = {"compile_kernel", "run_correctness", "submit_kernel"}
+# Tools that touch the GPU. When sandboxed, each call dispatches to a
+# fresh `python -m ensemble.tool_worker` subprocess so a CUDA-fatal
+# candidate (illegal memory access, watchdog timeout) kills only the
+# worker — the parent's CUDA context stays clean.
+#
+# Temporarily empty: in ensemble@e99b15d the sandbox worker does not
+# inherit enough state to re-register the world, so dispatched calls
+# fail with "tool 'compile_kernel' not registered by world 'ktbench'".
+# Restore once the upstream subprocess propagation is fixed.
+_SANDBOXED: set[str] = set()
 
 
 def _load_eval_config(path: Optional[Path] = None) -> Dict[str, Any]:

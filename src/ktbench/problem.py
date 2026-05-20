@@ -55,7 +55,7 @@ class CaseSpec:
     """A single structured (curated) correctness case with fixed shape."""
     id: str
     desc: str
-    shapes: dict[str, list[int]]   # named dimension → concrete sizes
+    shapes: dict[str, int]         # named dimension → concrete size
     dtype: str                     # "fp16" | "bf16" | "fp32"
 
 
@@ -78,8 +78,11 @@ def _load_test_suite(path: Path) -> TestSuite:
 
     cases = []
     for c in raw.get("cases", []):
-        shapes = {k: (v if isinstance(v, list) else [v])
-                  for k, v in c.get("shapes", {}).items()}
+        # Pass shape scalars through as-is (every generator on disk
+        # reads `shapes["N"]` as an int). The earlier list-wrap was a
+        # placeholder for per-case shape sweeps that never landed and
+        # only ever broke the consumers.
+        shapes = dict(c.get("shapes", {}))
         cases.append(CaseSpec(
             id=c["id"],
             desc=c.get("desc", ""),

@@ -71,27 +71,33 @@ def load_model_class(src: str, dsl: str, build_dir: str | None = None) -> type:
 
 
 def _load_via_tempfile(src: str, entry_point: str) -> type:
-    """Write src to a temp .py file and import it. Required for JIT-decorated DSLs."""
+    """Write src to a temp .py file and import it. Required for JIT-decorated DSLs.
+
+    The tempfile is kept on disk for the lifetime of the process: Triton (and
+    other JIT-compiled DSLs) call ``inspect.getsource()`` on demand at first
+    kernel launch — well after this function returns. Unlinking immediately
+    causes "could not get source code" at every kernel call. We schedule
+    cleanup via ``atexit`` instead so traces still get cleaned up between
+    test runs.
+    """
+    import atexit
+
     fd, path = tempfile.mkstemp(suffix=".py", prefix="ktbench_candidate_")
+    with os.fdopen(fd, "w") as f:
+        f.write(src)
+    atexit.register(lambda p=path: os.path.exists(p) and os.unlink(p))
+
+    module_name = f"_ktbench_tmp_{os.path.basename(path)[:-3]}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
     try:
-        with os.fdopen(fd, "w") as f:
-            f.write(src)
-        module_name = f"_ktbench_tmp_{os.path.basename(path)[:-3]}"
-        spec = importlib.util.spec_from_file_location(module_name, path)
-        module = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(module)
-        except Exception as e:
-            raise DSLLoadError(f"Execution failed: {e}") from e
-        cls = getattr(module, entry_point, None)
-        if cls is None:
-            raise DSLLoadError(f"{entry_point} not found in submitted code")
-        return cls
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise DSLLoadError(f"Execution failed: {e}") from e
+    cls = getattr(module, entry_point, None)
+    if cls is None:
+        raise DSLLoadError(f"{entry_point} not found in submitted code")
+    return cls
 
 
 def _load_via_exec(src: str, entry_point: str, build_dir: str | None) -> type:
