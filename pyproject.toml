@@ -23,4 +23,5 @@ llm    = ["openai>=1.30"]
 dev    = ["pytest", "pytest-timeout"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["ktbench*", "tools*"]

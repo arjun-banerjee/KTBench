@@ -46,8 +46,10 @@ The script runs the full 6-stage pipeline and prints a JSON result summary. Exit
 
 ### Generate a translation with an LLM
 
+**Single-shot** — one LLM call, extract ModelNew, optionally evaluate:
+
 ```bash
-# OpenAI (Responses API — supports reasoning models like o3)
+# OpenAI
 OPENAI_API_KEY=sk-... python scripts/run_agent.py \
     --problem problems/softmax_h200_to_triton \
     --model o3 --reasoning-effort medium \
@@ -67,8 +69,18 @@ XAI_API_KEY=... python scripts/run_agent.py \
     --out candidate.py --eval
 ```
 
-`--eval` runs the full 6-stage pipeline after generation and exits 0 on success.
-Omit `--eval` to just write the candidate without running the evaluator.
+**Multi-turn with tools** — model iteratively compiles, tests, and submits:
+
+```bash
+OPENAI_API_KEY=sk-... python scripts/run_agent.py \
+    --problem problems/softmax_h200_to_triton \
+    --model o3 --reasoning-effort medium \
+    --multi-turn --max-turns 10 --device 0 --verbose
+```
+
+In multi-turn mode the model has access to five tools: `static_check`,
+`compile_kernel`, `run_correctness`, `get_gpu_specs`, and `submit_kernel`.
+The session ends when the model calls `submit_kernel`.
 
 ### Add a new problem
 
@@ -352,15 +364,21 @@ Provider (pick one preset or use --provider custom for full control):
   --api-kind           responses | chat  (default per provider)
   --reasoning-effort   minimal | low | medium | high  (Responses API only)
 
-Output:
-  --out FILE           Write candidate to FILE (default: print to stdout)
-  --retries N          API retry budget (default: 3)
+Mode:
+  --multi-turn         Multi-turn tool-calling loop (model calls compile/correct/submit)
+  --max-turns N        Max LLM turns in multi-turn mode (default: 10)
+  --tools NAMES        Comma-separated tool names (default: all)
+  --retries N          API retry budget per turn (default: 3)
 
-Evaluation (optional):
-  --eval               Run the full evaluator on the generated candidate
+Output (single-shot):
+  --out FILE           Write candidate to FILE (default: print to stdout)
+  --eval               Run the full evaluator after generation
+
+Shared:
   --device N           CUDA device index (default: 0)
-  --seed N             RNG seed for evaluation
-  --json-out FILE      Write evaluation JSON to FILE
+  --seed N             RNG seed
+  --n-timing N         Timing trials for evaluation (default: 20)
+  --json-out FILE      Write result JSON to FILE
   --verbose
 ```
 
@@ -431,11 +449,14 @@ KTBench/
 │       ├── reference_tgt.py
 │       ├── notes.md
 │       └── oracle_tensors/
+├── tools/                       # agent tool definitions (no KernelBench dependency)
+│   ├── __init__.py
+│   └── tools.py                 # Tool, ToolContext, ToolResult + 5 tool classes
 ├── src/ktbench/
 │   ├── llm/
 │   │   ├── client.py            # make_client() — OpenAI / Azure / Grok
 │   │   ├── utils.py             # retry backoff, usage dict, code extraction
-│   │   └── agent.py             # TranslationAgent — prompt → LLM → ModelNew src
+│   │   └── agent.py             # TranslationAgent — single-shot + tool-calling loop
 │   ├── registry/
 │   │   ├── hardware.py          # HW specs and SOL computation
 │   │   └── dsl.py               # DSL loading per backend
@@ -450,10 +471,38 @@ KTBench/
 │   ├── prompt.py                # prompt construction (no shapes exposed)
 │   └── score.py                 # final score and leaderboard row
 ├── scripts/
-│   ├── run_agent.py             # LLM → candidate → (optional) eval
+│   ├── run_agent.py             # LLM → single-shot or multi-turn tool loop
 │   ├── run_eval.py
 │   ├── add_problem.py
 │   └── build_oracle_tensors.py
 └── configs/
     └── eval_defaults.toml
+```
+
+### Agent tools (`tools/tools.py`)
+
+| Tool | Description |
+|---|---|
+| `static_check` | Detect reward-hacking patterns before GPU use |
+| `compile_kernel` | Try to compile ModelNew; return compiler errors |
+| `run_correctness` | Structured cases + stress suite (no timing) |
+| `get_gpu_specs` | Peak TFLOPS, DRAM BW, ridge point for the target HW |
+| `submit_kernel` | Full pipeline: correctness + stress + SOL timing + score |
+
+```python
+from tools.tools import get_tools, ToolContext
+from ktbench.problem import load_problem
+
+problem  = load_problem("problems/softmax_h200_to_triton")
+ctx      = ToolContext(problem=problem, device=0)
+tools    = get_tools()   # all 5 tools
+tool_map = {t.name: t for t in tools}
+
+# Compile a candidate
+result = tool_map["compile_kernel"].execute(ctx, kernel_code=src)
+print(result.output)
+
+# Check correctness
+result = tool_map["run_correctness"].execute(ctx, kernel_code=src)
+print(result.output)
 ```
