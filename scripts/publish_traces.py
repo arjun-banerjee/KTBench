@@ -218,9 +218,92 @@ def _load_runs_jsonl_index(trace: Path) -> Optional[Dict[str, Any]]:
 
 
 _GRADER_NOTE = re.compile(r"^grader:\s*(\{.*\})$")
-_SPAWN_NOTE = re.compile(
+# Legacy free-text agent_spawn note (older ensemble emitted this from
+# the scenario's _log_agent_prompt helper). Kept for backwards compat
+# while old traces are still on disk; the new ensemble emits a
+# structured `agent_spawned` event via world.log_event, parsed
+# separately below.
+_LEGACY_SPAWN_NOTE = re.compile(
     r"^agent_spawn:\s+id=(?P<id>\S+)\s+persona=(?P<persona>\S+)\s+model=(?P<model>\S+)"
 )
+
+
+_PROBLEM_LINE = re.compile(r"^\*\*Problem:\*\*\s+.*\((?P<src>[^→]+?)\s*→\s*(?P<tgt>[^)]+?)\)")
+_SRC_DSL_LINE = re.compile(r"^\*\*Source DSL:\*\*\s+`(?P<dsl>[^`]+)`\s+on\s+`(?P<hw>[^`]+)`")
+_TGT_DSL_LINE = re.compile(r"^\*\*Target DSL:\*\*\s+`(?P<dsl>[^`]+)`\s+on\s+`(?P<hw>[^`]+)`")
+
+
+_KTBENCH_PERSONAS = {
+    "normal_translation",
+    "normal",
+    "methodical_engineer",
+    "speed_obsessed",
+    "code_reviewer",
+    "aggressive_translator",
+}
+
+
+def _persona_from_system_prompt(prompt: Optional[str]) -> Optional[str]:
+    """Heuristic guess at the agent's persona from its system prompt.
+
+    The scenario concatenates the persona's template with the problem
+    prompt, so the persona's distinguishing prose is in there even
+    when the spawn event does not carry the persona name. The
+    heuristic is good enough for the leaderboard's persona filter; an
+    exact match is not required because the publisher reports it as a
+    facet, not a join key.
+    """
+    if not prompt:
+        return None
+    lower = prompt.lower()
+    if "code_reviewer" in lower or "i'm reviewing this translation" in lower:
+        return "code_reviewer"
+    if "speed_obsessed" in lower or "saturate" in lower and "wgmma" in lower:
+        return "speed_obsessed"
+    if "methodical_engineer" in lower or "lint" in lower and "static_check" in lower:
+        return "methodical_engineer"
+    if "translation" in lower or "re-optimize" in lower or "translate" in lower:
+        return "normal_translation"
+    return None
+
+
+def _fill_from_problem_prompt(summary: "Summary", text: str) -> None:
+    """Extract problem_id, src/tgt DSL+HW from the rendered prompt.
+
+    The prompt is built by ktbench.prompt.build_prompt; the first few
+    lines have the fields in a stable markdown format. Parsing the
+    prompt avoids requiring the scenario to set additional env vars
+    just for the publisher's benefit.
+    """
+    for raw in text.splitlines()[:10]:
+        line = raw.strip()
+        if summary.src_dsl is None or summary.src_hw is None:
+            m = _SRC_DSL_LINE.match(line)
+            if m:
+                summary.src_dsl = summary.src_dsl or m.group("dsl")
+                summary.src_hw = summary.src_hw or m.group("hw")
+                continue
+        if summary.tgt_dsl is None or summary.tgt_hw is None:
+            m = _TGT_DSL_LINE.match(line)
+            if m:
+                summary.tgt_dsl = summary.tgt_dsl or m.group("dsl")
+                summary.tgt_hw = summary.tgt_hw or m.group("hw")
+
+
+def _parse_logged_event(note: str) -> Optional[Dict[str, Any]]:
+    """Parse a system note that ensemble's log_event emitted as JSON.
+
+    log_event packs {"kind": "...", **payload} into the system note as
+    a JSON string. Returns the dict on a successful parse, None when
+    the note is not JSON-shaped.
+    """
+    if not note or not note.lstrip().startswith("{"):
+        return None
+    try:
+        obj = json.loads(note)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _parse_trace(trace: Path) -> Summary:
@@ -255,8 +338,45 @@ def _parse_trace(trace: Path) -> Summary:
                     grader_payload = json.loads(m.group(1))
                 except json.JSONDecodeError:
                     grader_payload = None
+
+            # Structured event (current ensemble: world.log_event +
+            # spawn_agent / spawn_user emit JSON in the note). The
+            # agent persona is the one the leaderboard cares about
+            # (translator framing); user_spawned only seeds a harness
+            # actor with the ktbench_harness persona and we never
+            # want to attribute the run to that. So agent_spawned
+            # always wins over user_spawned.
+            obj = _parse_logged_event(note)
+            if obj is not None:
+                ekind = obj.get("kind")
+                if ekind == "agent_spawned":
+                    if summary.model is None and isinstance(obj.get("model"), str):
+                        summary.model = obj["model"]
+                    # Agent persona resolves through the system prompt
+                    # the scenario built. The new spawn_agent event
+                    # does not carry the persona name, so fall back
+                    # to KTBENCH_PERSONA-shaped detection on the
+                    # system prompt's first line when present, then
+                    # to the env default.
+                    if isinstance(obj.get("persona"), str):
+                        summary.persona = obj["persona"]
+                    elif summary.persona in (None, "ktbench_harness"):
+                        summary.persona = _persona_from_system_prompt(obj.get("system_prompt"))
+                elif ekind == "user_spawned":
+                    # Only use the user persona if we have not seen an
+                    # agent spawn yet, and avoid the harness sentinel
+                    # entirely.
+                    p = obj.get("persona")
+                    if (summary.persona is None and isinstance(p, str)
+                            and p != "ktbench_harness"):
+                        summary.persona = p
+                elif ekind == "problem_prompt":
+                    text = obj.get("text") or ""
+                    _fill_from_problem_prompt(summary, text)
+
+            # Legacy free-text fallback for older traces still on disk.
             first_line = note.splitlines()[0] if note else ""
-            sm = _SPAWN_NOTE.match(first_line)
+            sm = _LEGACY_SPAWN_NOTE.match(first_line)
             if sm:
                 if summary.persona is None:
                     summary.persona = sm.group("persona")
@@ -296,6 +416,23 @@ def _parse_trace(trace: Path) -> Summary:
 
     if summary.scenario is None:
         summary.scenario = trace.stem
+
+    # Derive problem_id from the scenario name when no sibling
+    # runs.jsonl filled it in. Three shapes need handling:
+    # ktbench.<problem>           -> <problem>
+    # ktbench.judge_<problem>     -> <problem>
+    # ktbench_<problem>           (trace-stem fallback when there was
+    #                              no grader event because the run
+    #                              never reached submit_kernel)
+    if summary.problem_id is None and summary.scenario:
+        s = summary.scenario
+        if s.startswith("ktbench."):
+            s = s[len("ktbench."):]
+        elif s.startswith("ktbench_"):
+            s = s[len("ktbench_"):]
+        if s.startswith("judge_"):
+            s = s[len("judge_"):]
+        summary.problem_id = s
 
     # Outcome from final_score: > 0 passed, == 0 (with a submission)
     # failed, no submission at all incomplete. The 0.5-cap fallback in

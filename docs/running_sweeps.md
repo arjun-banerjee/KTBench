@@ -30,6 +30,7 @@ problems/<problem_id>/
 ├── oracle.py         # numerically correct PyTorch eager reference
 ├── test_suite.toml   # structured cases + stress shape ranges
 ├── generator.py      # make_inputs(shapes, dtype, rng, device) -> [Tensor]
+├── perf.py           # optional: flops(shapes, dtype) for compute-axis SOL
 └── notes.md          # optional human description and gotchas
 ```
 
@@ -71,12 +72,28 @@ op takes `(q, k, v)`, every file accepts `(q, k, v)` in that order.
    returns a `list[Tensor]`. All randomness goes through `rng` so
    values cannot be hardcoded by the candidate.
 
-8. **Build oracle tensors** (optional, only when you want
+8. **Optional: write `perf.py`** if your op should land on the
+   compute axis of SOL. The eval pipeline auto-computes
+   `memory_util` from input + output tensor sizes for every
+   submission. Compute utilisation needs a flop count, which the
+   problem provides via `perf.py::flops(shapes, dtype) -> float`.
+   Counting convention: `add`/`sub`/`mul`/`div`/`cmp` = 1 flop each;
+   FMA = 2; `exp`/`log`/`rsqrt`/`sqrt`/`sigmoid`/`tanh` = 1 each;
+   reduction over N elements = N; element-wise op over shape `S` =
+   `prod(S)`. Skip the file for memory-bound ops (softmax, rmsnorm,
+   activations) since they reach SOL on the memory axis well before
+   the compute axis anyway; ship it for compute-dense ops (gemm,
+   attention without flash-style tile tricks) so the compute side
+   of the headline `sol_score = max(compute_util, memory_util)`
+   reflects real arithmetic work. See `docs/adding_problems.md`
+   for worked examples on each shipped problem.
+
+9. **Build oracle tensors** (optional, only when you want
    pre-computed reference outputs cached on disk):
    `python scripts/build_oracle_tensors.py --problem
    problems/<problem_id> --device 0`.
 
-9. **Verify the source kernel.** Treat the source as a candidate and
+10. **Verify the source kernel.** Treat the source as a candidate and
    run the full pipeline against the new problem to confirm it
    compiles and passes correctness:
 
@@ -92,13 +109,13 @@ op takes `(q, k, v)`, every file accepts `(q, k, v)` in that order.
    Fix before continuing; the model cannot do better than the
    source on this problem.
 
-10. **Generate scenarios.** `python
+11. **Generate scenarios.** `python
     integrations/ensemble/gen_scenarios.py --multi-actor` emits a
     single-agent `<problem_id>.py` and a multi-actor
     `judge_<problem_id>.py` scenario per problem directory. Existing
     files are kept unless `--overwrite` is passed.
 
-11. **Smoke-test with the mock backend.** Confirms the scenario,
+12. **Smoke-test with the mock backend.** Confirms the scenario,
     world, and tool wrappers load:
 
     ```

@@ -6,7 +6,7 @@ Each problem teaches the model to translate a kernel from one DSL/hardware pair 
 
 ## Directory layout
 
-Every problem lives in `problems/{problem_id}/` and contains exactly six files:
+Every problem lives in `problems/{problem_id}/` and contains six files plus one optional:
 
 ```
 problems/flash_attn_a100_to_h100/
@@ -16,6 +16,7 @@ problems/flash_attn_a100_to_h100/
 ├── source.py          # the input kernel (what the model sees)
 ├── oracle.py          # ground-truth reference in PyTorch eager
 ├── reference_tgt.py   # handwritten target-side reference (performance baseline)
+├── perf.py            # optional: flops(shapes, dtype) for compute-axis SOL
 └── notes.md           # human description and translation gotchas (optional)
 ```
 
@@ -288,6 +289,78 @@ Guidelines:
 - Cover at least 4–6 structured cases spanning a range of sizes and at least one non-power-of-2 shape.
 - Include a `bf16` or `fp32` case if the kernel supports multiple dtypes.
 - Set `stress.shape_ranges` tightly enough that random shapes stay within what the kernel can handle.
+
+---
+
+### `perf.py` (optional, recommended for compute-axis SOL)
+
+`perf.py` is the one knob that lets KTBench report the compute axis of
+SOL accurately. Without it, the eval still reports `memory_util`
+(auto-computed from input + output byte totals) but leaves
+`compute_util` at -1, so `sol = max(compute_util, memory_util) =
+memory_util`. Skip it when your op is bandwidth-bound and you do not
+care about a compute-side SOL number; ship one when the op is
+arithmetically dense (gemm, attention without flash-style memory
+tricks) and the compute axis should drive the final score.
+
+```python
+# problems/flash_attn_a100_to_h100/perf.py
+def flops(shapes, dtype) -> float:
+    B = shapes["B"]
+    H = shapes["H"]
+    S = shapes["S"]
+    D = shapes["D"]
+    # Q @ K^T = 2 * B * H * S * S * D, then * V = 2 * B * H * S * S * D,
+    # plus softmax (4 ops per element of the S * S score matrix).
+    qk  = 2.0 * B * H * S * S * D
+    sv  = 2.0 * B * H * S * S * D
+    sm  = 4.0 * B * H * S * S
+    return qk + sv + sm
+```
+
+**Counting convention.** Standard SOL accounting; the same numbers
+Nsight / NCU would report for "executed FLOPs" if you ran the kernel
+under them.
+
+- `add`, `sub`, `mul`, `div`, `min`, `max`, compare: **1 flop** each.
+- Fused multiply-add: **2 flops** (counted as separate mul + add).
+- Transcendentals (`exp`, `log`, `rsqrt`, `sqrt`, `sigmoid`, `tanh`):
+  **1 flop** each. This is the SOL ceiling convention; some pipelines
+  count them as 4-8 because they decompose into a polynomial in
+  hardware, but for the SOL denominator you want the *minimum* work
+  the kernel had to do.
+- Reduction over N elements: **N flops** (one accumulating add per
+  element; the last add is the result).
+- Element-wise op over a tensor of shape S: **prod(S) flops**.
+- Matmul `[M, K] @ [K, N] = [M, N]`: **2 * M * N * K flops** (the
+  classic GEMM count: N output elements, each is a K-long dot product
+  = K muls + K-1 adds ≈ 2K flops per output).
+
+The signature is `flops(shapes, dtype) -> float`. `shapes` is the
+first structured case's shape dict (the same one timing runs against);
+`dtype` is its dtype string. Return a float (the count, not a TFLOP
+rate). The harness divides by measured runtime and the target HW's
+peak TFLOP/s to land on `compute_util` in [0, 1].
+
+Worked examples for the shipped problems:
+
+| Problem | `flops(shapes, dtype)` |
+|---|---|
+| `softmax_a100_to_h100` | `5 * N * D` (sub + exp + add + div per element + max reduction) |
+| `swiglu_activation_a100_to_h100` | `5 * N * D` (4 ops for SiLU + 1 mul by up) |
+| `fused_rms_norm_residual_a100_to_h100` | `B * L * (5 * D + 3)` (D squares + D-sum + rsqrt + 2 * D muls + residual) |
+| `causal_conv1d_silu_a100_to_h100` | `B * D * L * 11` (4 muls + 3 adds per tap + 4 for SiLU) |
+| `chunk_decay_scan_a100_to_h100` | `2 * B * H * L * D + H * D` (mul-add per element + one exp per decay entry) |
+| `hadamard_transform_a100_to_h100` | `B * N * 2 * log2(N)` |
+
+**When to skip perf.py.** Memory-bound ops (softmax, swiglu, rmsnorm,
+hadamard, most activations) reach SOL on the memory axis well before
+the compute axis even at saturation, so `memory_util` alone is the
+right ceiling and adding flops just confirms it. Ship `perf.py`
+anyway if you want both axes on the leaderboard; the cost is a few
+lines per problem and the gain is a `compute_util` column that's
+nonzero, which helps spot kernels that are spending real arithmetic
+work on the right path.
 
 ---
 
