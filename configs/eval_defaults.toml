@@ -1,0 +1,23 @@
+[eval]
+num_warmup_trials   = 5
+num_timing_trials   = 20
+timing_method       = "cuda_event"   # cuda_event | host_time
+measure_energy      = true           # NVIDIA only; skipped silently on other vendors
+measure_nsight      = false          # requires ncu in PATH; slow
+subprocess_timeout  = 300            # seconds per eval subprocess
+
+[correctness]
+# Both structured AND stress cases generate tensor values with this RNG family.
+# Values are ALWAYS freshly sampled — hardcoded outputs cannot pass.
+value_rng_seed_base = 0xKTB         # hex, per-case seed = seed_base XOR case_index
+
+[stress]
+num_trials       = 30
+pass_threshold   = 0.90             # fraction of stress trials that must pass for perf credit
+
+[antihack]
+utilization_floor_pct = 2.0         # SOL_compute OR SOL_dram must exceed this; blocks suspected no-ops
+excessive_speedup_vs_ref = 50.0     # flag if candidate is >50x faster than reference_tgt
+
+[leaderboard]
+primary_metric = "final_score"      # correctness_rate * stress_pass_rate * sol_score

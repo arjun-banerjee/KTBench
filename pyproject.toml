@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ktbench"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.3",
+    "numpy>=1.26",
+    "safetensors>=0.4",
+    "tomli>=2.0; python_version < '3.11'",
+    "pydantic>=2.0",
+    "pydra-config>=0.1",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+triton = ["triton>=2.3"]
+nki    = ["neuronxcc"]
+dev    = ["pytest", "pytest-timeout"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

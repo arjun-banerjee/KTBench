@@ -1,0 +1,18 @@
+problem_id   = "softmax_h200_to_triton"
+name         = "Online Softmax (CUDA H200 → Triton H200)"
+src_dsl      = "cuda"
+src_hw       = "nvidia_h200_sxm"
+tgt_dsl      = "triton"
+tgt_hw       = "nvidia_h200_sxm"
+tags         = ["softmax", "reduction", "fp16", "online-algorithm"]
+difficulty   = 2
+provenance   = "hand-written reference"
+
+# Reduction accumulation differs between CUDA and Triton → custom tolerance
+[tolerances.fp16]
+atol = 1e-2
+rtol = 1e-2
+
+[tolerances.bf16]
+atol = 1e-2
+rtol = 1e-2
