@@ -57,36 +57,22 @@ def _chunk_decay_scan_kernel(
     base_ptr = x_ptr + b * stride_b + h * stride_h + d_offs
     out_ptr  = y_ptr + b * stride_b + h * stride_h + d_offs
 
-    # Process L in tiles of BLOCK_L to stay within register budget.
+    # Sequential scan along L. Triton 3.x rejects scalar indexing into
+    # a 2D tile with a constexpr (the static_range loop variable), so
+    # the scan walks one timestep at a time and reads/writes one
+    # BLOCK_D row per iteration instead of staging a [BLOCK_L, BLOCK_D]
+    # tile. The op is inherently sequential along L anyway; the chunked
+    # tile only saved memory traffic, not arithmetic, so this rewrite
+    # keeps the same SOL ceiling.
     state = tl.zeros((BLOCK_D,), dtype=tl.float32)
-
-    n_l_blocks = tl.cdiv(L, BLOCK_L)
-    for lb in range(n_l_blocks):
-        l_start = lb * BLOCK_L
-        l_offs  = l_start + tl.arange(0, BLOCK_L)
-        l_mask  = l_offs < L
-
-        # Load x tile: [BLOCK_L, BLOCK_D]
-        x_tile = tl.load(
-            base_ptr + l_offs[:, None] * stride_l,
-            mask=l_mask[:, None] & d_mask[None, :],
-            other=0.0,
-        ).to(tl.float32)
-
-        # Sequential scan within the tile carrying in prior state.
-        out_tile = tl.zeros((BLOCK_L, BLOCK_D), dtype=tl.float32)
-        for t in tl.static_range(BLOCK_L):
-            state    = state * decay + x_tile[t, :]
-            out_tile = tl.where(
-                tl.arange(0, BLOCK_L)[:, None] == t,
-                state[None, :],
-                out_tile,
-            )
-
+    for t in range(L):
+        row_ptr = base_ptr + t * stride_l
+        x_row = tl.load(row_ptr, mask=d_mask, other=0.0).to(tl.float32)
+        state = state * decay + x_row
         tl.store(
-            out_ptr + l_offs[:, None] * stride_l,
-            out_tile.to(x_ptr.dtype.element_ty),
-            mask=l_mask[:, None] & d_mask[None, :],
+            out_ptr + t * stride_l,
+            state.to(x_ptr.dtype.element_ty),
+            mask=d_mask,
         )
 
 

@@ -43,21 +43,23 @@ def _causal_conv1d_silu_kernel(
 
     block_start = pid_l * BLOCK_L
 
-    # Load per-channel filter weights [kW] into registers.
-    w = tl.load(w_ptr + d * kW + tl.arange(0, kW)).to(tl.float32)
-
     # Output positions this program is responsible for.
     out_offs  = block_start + tl.arange(0, BLOCK_L)
     out_mask  = out_offs < L
     base_ptr  = x_ptr + b * stride_b + d * stride_d
 
     # Accumulate: for each weight tap wi, load x[out_pos - (kW-1-wi)].
+    # Triton 3.x rejects scalar indexing of a tile with a constexpr (the
+    # loop variable from tl.static_range), so the per-tap weight is
+    # reloaded as a scalar inside the loop rather than indexed out of a
+    # preloaded vector.
     acc = tl.zeros((BLOCK_L,), dtype=tl.float32)
     for wi in tl.static_range(kW):
         tap_offs = out_offs - (kW - 1 - wi)   # causal offset; may be negative
         tap_mask = out_mask & (tap_offs >= 0)
         xv = tl.load(base_ptr + tap_offs, mask=tap_mask, other=0.0).to(tl.float32)
-        acc += w[wi] * xv
+        wv = tl.load(w_ptr + d * kW + wi).to(tl.float32)
+        acc += wv * xv
 
     # SiLU: x / (1 + exp(-x))
     acc = acc / (1.0 + tl.exp(-acc))

@@ -39,6 +39,22 @@ from ktbench.eval.performance import PerformanceResult, measure_performance
 from ktbench.problem import Problem
 from ktbench.registry.dsl import DSLLoadError, load_model_class
 from ktbench.registry.hardware import get_hw_spec
+
+
+def _reference_at_fault(ref_model: Any, inputs: list, original_exc: Exception) -> bool:
+    """Best-effort attribution for a perf-measurement failure.
+
+    Try calling the reference once with the same inputs. If that raises,
+    the reference is broken. If it succeeds, the failure was on the
+    candidate side (or downstream timing / nsight / memory measurement).
+    Used to make the error message in the trace name the right actor.
+    """
+    try:
+        with torch.no_grad():
+            ref_model.forward(*inputs)
+        return False
+    except Exception:
+        return True
 from ktbench.score import compute_final_score
 
 
@@ -234,11 +250,30 @@ def eval_translation(
     if hasattr(ref_model, "to"):
         ref_model = ref_model.to(device)
 
-    perf = measure_performance(
-        cand_model, ref_model, timing_inputs, hw_spec, device,
-        n_warmup=n_warmup, n_trials=n_timing_trials,
-        flops=flops, bytes_accessed=bytes_accessed,
-    )
+    # Wrap perf measurement so a broken reference baseline does not
+    # surface as an opaque "unexpected error" attributed to the
+    # candidate. The candidate already passed correctness + stress
+    # at this point; the perf path can only fail because the
+    # reference_tgt is broken (JIT compile, runtime error, OOM) or
+    # the candidate misbehaves under repeated invocation. Either way
+    # the diagnostic should name the failing actor.
+    try:
+        perf = measure_performance(
+            cand_model, ref_model, timing_inputs, hw_spec, device,
+            n_warmup=n_warmup, n_trials=n_timing_trials,
+            flops=flops, bytes_accessed=bytes_accessed,
+        )
+    except Exception as e:
+        ref_failed = _reference_at_fault(ref_model, timing_inputs, e)
+        which = "reference_tgt" if ref_failed else "candidate"
+        result.compile_error = (
+            f"{which} failed during performance measurement: "
+            f"{type(e).__name__}: {e}"
+        )
+        result.sol_score = -1.0
+        result.final_score = 0.0
+        result.eval_wall_time_s = time.monotonic() - t_start
+        return result
     result.performance = perf
     result.sol_score = perf.sol.get("sol_score", 0.0)
     result.speedup_vs_ref = perf.speedup_vs_ref

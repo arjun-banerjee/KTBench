@@ -149,12 +149,18 @@ def compute_sol(
     Compute SOL (Speed-of-Light) score.
 
     SOL = max(compute_util, memory_util) where each is in [0, 1].
-    At least one of flops or bytes_accessed must be provided.
-    If neither is known, falls back to a timing-only heuristic (sol_score = -1).
+    At least one of flops or bytes_accessed should be provided; with
+    neither, both utilisation axes default to 0 and the result is the
+    sentinel `sol_score = -1` so downstream callers (score.compute_final_score,
+    antihack's noop gate) can fall back without misreading 0 as a real
+    measurement.
     """
     result: dict = {"sol_score": -1.0, "bottleneck": "unknown"}
 
     if runtime_ms <= 0:
+        return result
+
+    if flops is None and bytes_accessed is None:
         return result
 
     runtime_s = runtime_ms / 1000.0

@@ -201,6 +201,29 @@ class PerformanceResult:
         }
 
 
+def _ideal_bytes_accessed(inputs: list, output: Any) -> float:
+    """Sum the bytes of every input and output tensor.
+
+    This is the "speed of light" memory denominator for SOL: the
+    minimum amount of DRAM traffic a kernel could do while still
+    producing the right answer (read each input once, write each
+    output once). Real kernels do more, so memory_util in (0, 1] is
+    the fraction of that ideal the kernel achieved. A kernel that
+    moves *fewer* bytes than this would have to be skipping work,
+    which the antihack gate already catches via the utilisation
+    floor.
+    """
+    total = 0.0
+    for t in inputs:
+        if isinstance(t, torch.Tensor):
+            total += t.element_size() * t.numel()
+    outputs = output if isinstance(output, (list, tuple)) else [output]
+    for t in outputs:
+        if isinstance(t, torch.Tensor):
+            total += t.element_size() * t.numel()
+    return total
+
+
 def measure_performance(
     cand_model: Any,
     ref_model: Any,
@@ -218,7 +241,9 @@ def measure_performance(
     Compute SOL relative to HW ceiling.
 
     flops / bytes_accessed: if provided, used for exact SOL computation.
-    If neither is available, timing-only stats are recorded and sol_score = -1.
+    If bytes_accessed is missing, it is estimated automatically from
+    input + output tensor sizes (the ideal SOL denominator). This means
+    SOL is always reported; SOL is only -1 if timing itself failed.
     """
     result = PerformanceResult()
 
@@ -229,6 +254,11 @@ def measure_performance(
     ref_ms = result.ref_runtime["mean_ms"]
     if cand_ms > 0 and ref_ms > 0:
         result.speedup_vs_ref = ref_ms / cand_ms
+
+    if bytes_accessed is None:
+        with torch.no_grad():
+            cand_out = cand_model.forward(*inputs)
+        bytes_accessed = _ideal_bytes_accessed(inputs, cand_out)
 
     result.sol = compute_sol(
         cand_ms, hw_spec,
