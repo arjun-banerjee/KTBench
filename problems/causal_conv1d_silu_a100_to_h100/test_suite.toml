@@ -1,0 +1,84 @@
+# Causal depthwise conv1D: input [B, D, L], weight [D, 4] → output [B, D, L]
+# width=4 means each output at position t uses inputs t-3, t-2, t-1, t (zero-padded at boundary).
+# Tensor values are always freshly randomized.
+
+[[cases]]
+id    = "small"
+desc  = "small sequence, few channels"
+dtype = "fp16"
+[cases.shapes]
+B = 2
+D = 64
+L = 256
+
+[[cases]]
+id    = "long_seq"
+desc  = "long sequence — tests chunk boundary handling"
+dtype = "fp16"
+[cases.shapes]
+B = 4
+D = 128
+L = 4096
+
+[[cases]]
+id    = "short_seq"
+desc  = "sequence shorter than one chunk — no inter-chunk state needed"
+dtype = "fp16"
+[cases.shapes]
+B = 8
+D = 256
+L = 128
+
+[[cases]]
+id    = "wide_channels"
+desc  = "many channels — exercises channel parallelism"
+dtype = "fp16"
+[cases.shapes]
+B = 2
+D = 2048
+L = 512
+
+[[cases]]
+id    = "seqlen_not_chunk_aligned"
+desc  = "seqlen is not a multiple of chunk size — exercises tail handling"
+dtype = "fp16"
+[cases.shapes]
+B = 4
+D = 128
+L = 700
+
+[[cases]]
+id    = "single_token"
+desc  = "L=1 edge case — all history is zero-padding"
+dtype = "fp16"
+[cases.shapes]
+B = 4
+D = 64
+L = 1
+
+[[cases]]
+id    = "bf16"
+desc  = "bfloat16 dtype"
+dtype = "bf16"
+[cases.shapes]
+B = 4
+D = 256
+L = 1024
+
+[[cases]]
+id    = "batch1"
+desc  = "batch size 1, common in inference"
+dtype = "fp16"
+[cases.shapes]
+B = 1
+D = 512
+L = 2048
+
+[stress]
+num_trials     = 30
+pass_threshold = 0.90
+
+[stress.shape_ranges]
+B = [1, 8]
+D = [16, 1024]
+L = [1, 4096]

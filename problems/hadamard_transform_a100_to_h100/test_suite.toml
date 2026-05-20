@@ -1,0 +1,67 @@
+# Walsh-Hadamard Transform: x [B, N] → y [B, N],  N must be a power of 2.
+# y = (1/sqrt(N)) * H_N @ x   (the normalised WHT)
+
+[[cases]]
+id    = "N32"
+desc  = "single warp: N=32 fits in 32 threads"
+dtype = "fp16"
+[cases.shapes]
+B = 16
+N = 32
+
+[[cases]]
+id    = "N64"
+desc  = "N=64, one stage of smem transpose"
+dtype = "fp16"
+[cases.shapes]
+B = 16
+N = 64
+
+[[cases]]
+id    = "N256"
+desc  = "N=256, baseline HadaCore block size"
+dtype = "fp16"
+[cases.shapes]
+B = 32
+N = 256
+
+[[cases]]
+id    = "N1024"
+desc  = "N=1024, multiple smem stages"
+dtype = "fp16"
+[cases.shapes]
+B = 16
+N = 1024
+
+[[cases]]
+id    = "N4096"
+desc  = "N=4096, quantisation-scale hadamard for LLM weight rotation"
+dtype = "fp16"
+[cases.shapes]
+B = 8
+N = 4096
+
+[[cases]]
+id    = "large_batch"
+desc  = "large batch, small N"
+dtype = "fp16"
+[cases.shapes]
+B = 256
+N = 64
+
+[[cases]]
+id    = "bf16_N256"
+desc  = "bfloat16"
+dtype = "bf16"
+[cases.shapes]
+B = 32
+N = 256
+
+[stress]
+num_trials     = 30
+pass_threshold = 0.90
+
+[stress.shape_ranges]
+B = [1, 128]
+N = [32, 4096]
+# Note: evaluator must pick N as a power of 2; generator enforces this.

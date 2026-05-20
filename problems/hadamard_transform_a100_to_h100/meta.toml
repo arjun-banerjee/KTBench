@@ -1,0 +1,17 @@
+problem_id = "hadamard_transform_a100_to_h100"
+name        = "Fast Walsh-Hadamard Transform (A100 CUDA → H100 Triton)"
+src_dsl     = "cuda"
+src_hw      = "nvidia_a100_sxm"
+tgt_dsl     = "triton"
+tgt_hw      = "nvidia_h100_sxm"
+tags        = ["hadamard", "fwht", "butterfly", "quantization", "randomised-smoothing"]
+difficulty  = 4
+provenance  = "adapted from HadaCore (pytorch-labs/applied-ai, Apache 2.0, 2024)"
+
+[tolerances.fp16]
+atol = 5e-2
+rtol = 5e-2
+
+[tolerances.bf16]
+atol = 5e-2
+rtol = 5e-2
