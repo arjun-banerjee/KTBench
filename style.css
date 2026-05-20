@@ -1,0 +1,261 @@
+/* PopcornBench gh-pages stylesheet.
+ *
+ * Design tokens declared as CSS custom properties at :root so the
+ * leaderboard, the run index, and any future page reference them
+ * by name. Calling Code (Typekit) is the only font; tables align
+ * cleanly in monospace and the page reads as instrumented.
+ */
+
+:root {
+  --darker-red: #8c1c13;
+  --lighter-red: #bf4342;
+  --tan: #e7d7c1;
+  --light-brown: #a78a7f;
+  --darker-brown: #735751;
+
+  --bg: var(--tan);
+  --fg: var(--darker-brown);
+  --muted: var(--light-brown);
+  --link: var(--lighter-red);
+  --emphasis: var(--darker-red);
+
+  --font: "calling-code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --prose-size: 17px;
+  --prose-line: 1.6;
+  --table-size: 14px;
+  --table-line: 1.4;
+  --h1-size: 26px;
+  --h2-size: 21px;
+  --h3-size: 18px;
+
+  --max-width: 1100px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: var(--prose-size);
+  line-height: var(--prose-line);
+  -webkit-font-smoothing: antialiased;
+}
+
+body > main {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+}
+
+header.site {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--muted);
+  padding-bottom: 12px;
+  margin-bottom: 28px;
+}
+
+header.site .wordmark {
+  font-size: var(--h1-size);
+  color: var(--emphasis);
+  text-decoration: none;
+  font-weight: normal;
+}
+
+header.site nav a {
+  color: var(--fg);
+  text-decoration: none;
+  margin-left: 18px;
+  font-size: var(--prose-size);
+}
+
+header.site nav a.active {
+  color: var(--emphasis);
+}
+
+header.site nav a:hover {
+  color: var(--link);
+}
+
+h1 {
+  font-size: var(--h1-size);
+  margin: 0 0 18px;
+  color: var(--emphasis);
+  font-weight: normal;
+}
+
+h2 {
+  font-size: var(--h2-size);
+  margin: 36px 0 12px;
+  color: var(--emphasis);
+  font-weight: normal;
+}
+
+h3 {
+  font-size: var(--h3-size);
+  margin: 24px 0 8px;
+  color: var(--fg);
+  font-weight: normal;
+}
+
+p {
+  margin: 0 0 14px;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+a:hover {
+  border-bottom-color: var(--link);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.emphasis {
+  color: var(--emphasis);
+}
+
+.prose {
+  max-width: 78ch;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+  margin: 22px 0 14px;
+  font-size: var(--table-size);
+}
+
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.filters select {
+  font-family: var(--font);
+  font-size: var(--table-size);
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--muted);
+  border-radius: 0;
+  padding: 4px 6px;
+}
+
+.filters select:focus {
+  outline: none;
+  border-color: var(--link);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--table-size);
+  line-height: var(--table-line);
+  margin-bottom: 32px;
+}
+
+table.data caption {
+  text-align: left;
+  font-size: var(--h3-size);
+  color: var(--emphasis);
+  padding-bottom: 8px;
+  caption-side: top;
+}
+
+table.data th, table.data td {
+  text-align: left;
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--muted);
+  vertical-align: top;
+}
+
+table.data th {
+  color: var(--muted);
+  font-weight: normal;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+table.data th[data-sortable="true"]:hover {
+  color: var(--link);
+}
+
+table.data th.sort-asc::after {
+  content: " \25B2";
+  color: var(--emphasis);
+}
+
+table.data th.sort-desc::after {
+  content: " \25BC";
+  color: var(--emphasis);
+}
+
+table.data td.numeric, table.data th.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-right: 18px;
+}
+
+table.data tr:hover td {
+  background: rgba(167, 138, 127, 0.12);
+}
+
+table.data tr.peak td {
+  color: var(--emphasis);
+}
+
+.outcome-passed {
+  color: var(--emphasis);
+}
+
+.outcome-failed, .outcome-incomplete {
+  color: var(--muted);
+}
+
+footer.site {
+  border-top: 1px solid var(--muted);
+  margin-top: 48px;
+  padding-top: 14px;
+  color: var(--muted);
+  font-size: var(--table-size);
+}
+
+footer.site a {
+  color: var(--muted);
+}
+
+footer.site a:hover {
+  color: var(--link);
+  border-bottom-color: var(--link);
+}
+
+.empty {
+  color: var(--muted);
+  padding: 16px 0;
+}
+
+/* Small screens: drop padding, allow tables to scroll. */
+@media (max-width: 720px) {
+  body > main {
+    padding: 20px 16px 40px;
+  }
+  .table-scroll {
+    overflow-x: auto;
+  }
+}
