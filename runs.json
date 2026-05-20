@@ -1,6 +1,34 @@
 {
-  "generated_at": "2026-05-20T21:13:02Z",
+  "generated_at": "2026-05-20T21:15:04Z",
   "runs": [
+    {
+      "slug": "ktbench_softmax_a100_to_h100",
+      "timestamp": "2026-05-20T21:14:33Z",
+      "scenario": "ktbench.softmax_a100_to_h100",
+      "model": null,
+      "persona": null,
+      "problem_id": null,
+      "src_dsl": null,
+      "tgt_dsl": null,
+      "src_hw": null,
+      "tgt_hw": null,
+      "outcome": "incomplete",
+      "final_score": null,
+      "sol_score": null,
+      "correctness_rate": null,
+      "stress_pass_rate": null,
+      "speedup_vs_ref": null,
+      "cost_gpu_seconds": 0.0,
+      "scores": {
+        "submitted": 0.0,
+        "submit_passed": 0.0,
+        "correctness_passed": 0.0,
+        "stress_passed": 0.0,
+        "sol_above_threshold": 0.0,
+        "static_check_failed": 0.0
+      },
+      "viewer_path": "ktbench_softmax_a100_to_h100/viewer.html"
+    },
     {
       "slug": "ktbench_causal_conv1d_silu_a100_to_h100",
       "timestamp": "2026-05-20T20:40:17Z",
@@ -112,34 +140,6 @@
         "static_check_failed": 0.0
       },
       "viewer_path": "ktbench_hadamard_transform_a100_to_h100/viewer.html"
-    },
-    {
-      "slug": "ktbench_softmax_a100_to_h100",
-      "timestamp": "2026-05-20T20:40:17Z",
-      "scenario": "ktbench.softmax_a100_to_h100",
-      "model": "gpt-5.5",
-      "persona": "normal_translation",
-      "problem_id": null,
-      "src_dsl": null,
-      "tgt_dsl": null,
-      "src_hw": null,
-      "tgt_hw": null,
-      "outcome": "incomplete",
-      "final_score": null,
-      "sol_score": null,
-      "correctness_rate": null,
-      "stress_pass_rate": null,
-      "speedup_vs_ref": null,
-      "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
-      "viewer_path": "ktbench_softmax_a100_to_h100/viewer.html"
     },
     {
       "slug": "ktbench_softmax_h200_to_triton",
