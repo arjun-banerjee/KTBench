@@ -31,25 +31,52 @@ Run with:
         --backend anthropic
 """
 
-from ensemble import scenario  # type: ignore[import]
+import os
+import sys
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent.parent.parent
+if str(_REPO / "integrations" / "ensemble") not in sys.path:
+    sys.path.insert(0, str(_REPO / "integrations" / "ensemble"))
+
+import ktbench_world  # noqa: F401  registers the world
+from ktbench_world import PERSONAS_DIR, prompt_for_path
+from ensemble import scenario
+from ensemble.persona import load_persona
+
 
 PROBLEM_PATH = "{problem_path}"
 MAX_TURNS    = {max_turns}
-DEVICE       = {device}
+
+
+def _log_agent_prompt(world, agent_id, persona_name, model):
+    try:
+        spec = load_persona(PERSONAS_DIR / f"{{persona_name}}.toml")
+        world._native.log_note(
+            f"agent_spawn: id={{agent_id}} persona={{spec.name}} model={{model}}\\n"
+            f"system_prompt:\\n{{spec.system_prompt}}"
+        )
+    except Exception:
+        pass
 
 
 @scenario("ktbench.{problem_id}", world="ktbench")
 async def {func_name}(world):
-    prompt = world.load_problem(PROBLEM_PATH)
+    os.environ["KTBENCH_PROBLEM_PATH"] = PROBLEM_PATH
+    model = os.environ.get("KTBENCH_MODEL", "{model}")
+    persona_name = os.environ.get("KTBENCH_PERSONA", "normal_translation")
 
-    harness = world.spawn_user(
-        id="harness",
-        persona="ktbench_harness",
-        model=None,
-    )
-    agent = world.spawn_agent(
+    persona_path = PERSONAS_DIR / f"{{persona_name}}.toml"
+    persona_system = ""
+    if persona_path.exists():
+        persona_system = load_persona(persona_path).system_prompt
+    problem_prompt = prompt_for_path(PROBLEM_PATH)
+    full_system = (persona_system + "\\n\\n---\\n\\n" + problem_prompt).lstrip()
+
+    world.spawn_agent(
         id="kernel_engineer",
-        model="{model}",
+        model=model,
+        system_prompt=full_system,
         tools=[
             "static_check",
             "compile_kernel",
@@ -58,21 +85,18 @@ async def {func_name}(world):
             "submit_kernel",
         ],
     )
+    _log_agent_prompt(world, "kernel_engineer", persona_name, model)
+    world._native.log_note(f"problem_prompt:\\n{{problem_prompt}}")
 
-    harness.say("kernel_engineer", prompt)
+    yield world.until(world.turn_count > MAX_TURNS)
 
-    yield world.until(
-        world.state["submitted"] or world.turn_count >= MAX_TURNS
-    )
-
-    s = world.state
     yield {{
-        "final_score": s["final_score"],
-        "correctness": s["correctness_rate"],
-        "stress":      s["stress_pass_rate"],
-        "sol":         s["sol_score"],
-        "submitted":   1.0 if s["submitted"] else 0.0,
-        "turns_used":  world.turn_count / MAX_TURNS,
+        "submitted":             1.0 if world.evaluate_predicate("submit_called") else 0.0,
+        "submit_passed":         1.0 if world.evaluate_predicate("submit_passed") else 0.0,
+        "correctness_passed":    1.0 if world.evaluate_predicate("correctness_passed") else 0.0,
+        "stress_passed":         1.0 if world.evaluate_predicate("stress_passed") else 0.0,
+        "sol_above_threshold":   1.0 if world.evaluate_predicate("sol_above_threshold") else 0.0,
+        "static_check_failed":   1.0 if world.evaluate_predicate("static_check_failed") else 0.0,
     }}
 '''
 
