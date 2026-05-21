@@ -1,0 +1,59 @@
+# bf16_gemm_warptile_a100_to_h100
+# A100: https://github.com/HamzaElshafie/h100_gemm/blob/main/src/kernels/general/gemm_warptiling_bf16.cuh
+# H100: https://github.com/HamzaElshafie/h100_gemm/blob/main/src/kernels/hopper/gemm_bf16_wgmma_tma_shapes.cuh
+# C = A @ B  (BF16)  —  A[M,K], B[K,N] row-major → C[M,N] row-major
+
+[[cases]]
+id    = "sq512"
+desc  = "square 512"
+dtype = "bf16"
+[cases.shapes]
+M = 512
+K = 512
+N = 512
+
+[[cases]]
+id    = "sq1024"
+desc  = "square 1024"
+dtype = "bf16"
+[cases.shapes]
+M = 1024
+K = 1024
+N = 1024
+
+[[cases]]
+id    = "rect1"
+desc  = "M>N"
+dtype = "bf16"
+[cases.shapes]
+M = 1024
+K = 512
+N = 256
+
+[[cases]]
+id    = "rect2"
+desc  = "N>M"
+dtype = "bf16"
+[cases.shapes]
+M = 256
+K = 512
+N = 1024
+
+[[cases]]
+id    = "rect3"
+desc  = "K varies"
+dtype = "bf16"
+[cases.shapes]
+M = 512
+K = 2048
+N = 512
+
+[stress]
+num_trials     = 20
+pass_threshold = 0.9
+
+[stress.shape_ranges]
+M = [128, 1024]
+K = [64, 1024]
+N = [128, 1024]
+# Note: all dimensions must be multiples of 128

@@ -1,0 +1,13 @@
+problem_id = "bf16_gemm_reg2d_a100_to_h100"
+name        = "BF16 GEMM 2D-Register-Tiling A100 CUDA → H100 WGMMA+TMA"
+src_dsl     = "cuda"
+src_hw      = "nvidia_a100_sxm"
+tgt_dsl     = "cuda"
+tgt_hw      = "nvidia_h100_sxm"
+tags        = ["gemm", "bfloat16", "register-tiling", "wgmma", "tma"]
+difficulty  = 3
+provenance  = "A100: HamzaElshafie/h100_gemm general/gemm_2D_registertiling_bf16.cuh (Apache 2.0); H100: HamzaElshafie/h100_gemm hopper/gemm_bf16_wgmma_tma.cuh (Apache 2.0)"
+
+[tolerances.bf16]
+atol = 0.05
+rtol = 0.05
