@@ -98,7 +98,7 @@ const KTBenchSite = (() => {
       const groupId = groupKeys.map(k => String(r[k] ?? "")).join("|");
       let g = groups.get(groupId);
       if (!g) {
-        g = { runs: 0, passed: 0, final_scores: [], sol_scores: [], cost: 0 };
+        g = { runs: 0, passed: 0, final_scores: [], sol_scores: [], speedups: [], cost: 0 };
         for (const k of groupKeys) g[k] = r[k];
         groups.set(groupId, g);
       }
@@ -107,6 +107,9 @@ const KTBenchSite = (() => {
       if (typeof r.final_score === "number") g.final_scores.push(r.final_score);
       if (typeof r.sol_score === "number" && r.sol_score >= 0) {
         g.sol_scores.push(r.sol_score);
+      }
+      if (typeof r.speedup_vs_ref === "number" && r.speedup_vs_ref >= 0) {
+        g.speedups.push(r.speedup_vs_ref);
       }
       if (typeof r.cost_gpu_seconds === "number") g.cost += r.cost_gpu_seconds;
     }
@@ -119,6 +122,14 @@ const KTBenchSite = (() => {
       g.mean_sol = g.sol_scores.length
         ? g.sol_scores.reduce((a, b) => a + b, 0) / g.sol_scores.length
         : null;
+      // Geometric mean for speedup so a single 100x outlier does not
+      // dominate the arithmetic mean across a basket of problems.
+      if (g.speedups.length) {
+        const logs = g.speedups.map(s => Math.log(Math.max(s, 1e-9)));
+        g.mean_speedup = Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length);
+      } else {
+        g.mean_speedup = null;
+      }
       g.cost_gpu_seconds = g.cost;
       out.push(g);
     }
@@ -184,17 +195,21 @@ const KTBenchSite = (() => {
       const tbody1 = t1.querySelector("tbody");
       tbody1.innerHTML = "";
       if (!byModel.length) {
-        tbody1.innerHTML = '<tr><td colspan="6" class="empty">No runs match the current filter.</td></tr>';
+        tbody1.innerHTML = '<tr><td colspan="7" class="empty">No runs match the current filter.</td></tr>';
       }
       for (const g of byModel) {
         const tr = document.createElement("tr");
         if (g.mean_final && g.mean_final === peak) tr.classList.add("peak");
+        const speedupCell = (g.mean_speedup != null)
+          ? `${fmtNumber(g.mean_speedup, 2)}x`
+          : "";
         tr.innerHTML = `
           <td>${fmtStr(g.model)}</td>
           <td class="numeric">${fmtInt(g.runs)}</td>
           <td class="numeric">${fmtPct(g.success_rate, 0)}</td>
           <td class="numeric">${fmtNumber(g.mean_final, 3)}</td>
           <td class="numeric">${fmtNumber(g.mean_sol, 3)}</td>
+          <td class="numeric">${speedupCell}</td>
           <td class="numeric">${fmtNumber(g.cost_gpu_seconds, 1)}</td>
         `;
         tbody1.appendChild(tr);
@@ -208,11 +223,14 @@ const KTBenchSite = (() => {
       const tbody2 = t2.querySelector("tbody");
       tbody2.innerHTML = "";
       if (!byModelAxis.length) {
-        tbody2.innerHTML = '<tr><td colspan="7" class="empty">No runs match the current filter.</td></tr>';
+        tbody2.innerHTML = '<tr><td colspan="8" class="empty">No runs match the current filter.</td></tr>';
       }
       for (const g of byModelAxis) {
         const tr = document.createElement("tr");
         const axis = `${fmtStr(g.src_dsl)} → ${fmtStr(g.tgt_dsl)}`;
+        const speedupCell = (g.mean_speedup != null)
+          ? `${fmtNumber(g.mean_speedup, 2)}x`
+          : "";
         tr.innerHTML = `
           <td>${fmtStr(g.model)}</td>
           <td>${axis}</td>
@@ -220,6 +238,7 @@ const KTBenchSite = (() => {
           <td class="numeric">${fmtPct(g.success_rate, 0)}</td>
           <td class="numeric">${fmtNumber(g.mean_final, 3)}</td>
           <td class="numeric">${fmtNumber(g.mean_sol, 3)}</td>
+          <td class="numeric">${speedupCell}</td>
           <td class="numeric">${fmtNumber(g.cost_gpu_seconds, 1)}</td>
         `;
         tbody2.appendChild(tr);
@@ -229,7 +248,7 @@ const KTBenchSite = (() => {
       if (gen && DATA.generated_at) gen.textContent = "data: " + DATA.generated_at;
     }).catch(err => {
       const tbody = document.querySelector("#by-model tbody");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="empty">${err.message}</td></tr>`;
+      if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="empty">${err.message}</td></tr>`;
     });
   }
 
@@ -245,12 +264,15 @@ const KTBenchSite = (() => {
       const tbody = t.querySelector("tbody");
       tbody.innerHTML = "";
       if (!visibleRuns.length) {
-        tbody.innerHTML = '<tr><td colspan="11" class="empty">No runs match the current filter.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="empty">No runs match the current filter.</td></tr>';
       }
       for (const r of visibleRuns) {
         const tr = document.createElement("tr");
         const outcomeClass = "outcome-" + (r.outcome || "incomplete");
         const axis = `${fmtStr(r.src_dsl)} → ${fmtStr(r.tgt_dsl)}`;
+        const speedupCell = (typeof r.speedup_vs_ref === "number" && r.speedup_vs_ref >= 0)
+          ? `${fmtNumber(r.speedup_vs_ref, 2)}x`
+          : "";
         tr.innerHTML = `
           <td>${fmtStr(r.timestamp)}</td>
           <td>${fmtStr(r.scenario)}</td>
@@ -261,6 +283,7 @@ const KTBenchSite = (() => {
           <td class="${outcomeClass}">${fmtStr(r.outcome)}</td>
           <td class="numeric">${fmtNumber(r.final_score, 3)}</td>
           <td class="numeric">${fmtNumber(r.sol_score, 3)}</td>
+          <td class="numeric">${speedupCell}</td>
           <td class="numeric">${fmtNumber(r.cost_gpu_seconds, 1)}</td>
           <td><a href="${r.viewer_path}">trace</a></td>
         `;
@@ -271,7 +294,7 @@ const KTBenchSite = (() => {
       if (gen && DATA.generated_at) gen.textContent = "data: " + DATA.generated_at;
     }).catch(err => {
       const tbody = document.querySelector("#runs tbody");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="11" class="empty">${err.message}</td></tr>`;
+      if (tbody) tbody.innerHTML = `<tr><td colspan="12" class="empty">${err.message}</td></tr>`;
     });
   }
 

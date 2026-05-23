@@ -52,6 +52,7 @@
             <th data-sortable="true" data-key="outcome">outcome</th>
             <th data-sortable="true" data-key="final_score" class="numeric">final</th>
             <th data-sortable="true" data-key="sol_score" class="numeric">SOL</th>
+            <th data-sortable="true" data-key="speedup_vs_ref" class="numeric">speedup</th>
             <th data-sortable="true" data-key="cost_gpu_seconds" class="numeric">gpu-seconds</th>
             <th>trace</th>
           </tr>
@@ -59,6 +60,38 @@
         <tbody></tbody>
       </table>
     </div>
+
+    <section class="glossary">
+      <h2>Column glossary</h2>
+      <dl>
+        <dt><code>scenario</code></dt>
+        <dd>Ensemble scenario name. <code>ktbench.&lt;problem&gt;</code> is the single-agent shape; <code>ktbench.judge_&lt;problem&gt;</code> spawns an author plus a <code>code_reviewer</code> reviewer and is the multi-actor cell.</dd>
+
+        <dt><code>persona</code></dt>
+        <dd>Persona TOML the agent was framed with (translator baseline, methodical engineer, speed obsessed, etc.). Lives under <code>integrations/ensemble/personas/</code>.</dd>
+
+        <dt><code>problem</code> / <code>axis</code></dt>
+        <dd>The problem id and the <code>&lt;src_dsl&gt; → &lt;tgt_dsl&gt;</code> translation axis.</dd>
+
+        <dt><code>outcome</code></dt>
+        <dd><code>passed</code> = submit landed with a non-zero final score. <code>failed</code> = submit landed but a gate (correctness, stress, utilisation) zeroed the score. <code>incomplete</code> = the agent never reached <code>submit_kernel</code> before the turn budget or scheduler quiescence stopped the run.</dd>
+
+        <dt><code>final</code></dt>
+        <dd>Headline KTBench score for this run: <code>correctness_rate &times; stress_pass_rate &times; sol_score</code>, in [0, 1].</dd>
+
+        <dt><code>SOL</code></dt>
+        <dd>Speed-of-Light fraction: <code>max(achieved_throughput / hw_peak_throughput)</code> across the compute and memory axes. Bounded by physics, not by the reference baseline. Computed from per-problem <code>perf.py::flops()</code> (compute axis) and the input + output tensor byte totals (memory axis).</dd>
+
+        <dt><code>speedup</code></dt>
+        <dd>Candidate's mean runtime divided by the handwritten <code>reference_tgt.py</code> baseline runtime on the same inputs. Reported but <em>not</em> part of the gated score because it is gameable by slowing the reference.</dd>
+
+        <dt><code>gpu-seconds</code></dt>
+        <dd>Accelerator wall-clock for the eval pipeline (compile, correctness suite, stress, timing). Excludes scheduler idle time and LLM latency.</dd>
+
+        <dt><code>trace</code></dt>
+        <dd>Opens the per-run viewer with every tool call, tool result, reasoning summary, and grader output for this cell.</dd>
+      </dl>
+    </section>
 
     <footer class="site">
       <p>

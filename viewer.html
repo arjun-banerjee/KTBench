@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KTBench run viewer</title>
+  <link rel="stylesheet" href="https://use.typekit.net/bsk0vur.css">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* ── run meta bar ─────────────────────────────────────────────── */
+    .run-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 24px;
+      align-items: baseline;
+      border: 1px solid var(--muted);
+      padding: 12px 16px;
+      margin-bottom: 28px;
+      font-size: var(--table-size);
+    }
+    .run-meta .field { display: flex; gap: 6px; }
+    .run-meta .label { color: var(--muted); }
+    .run-meta .val   { color: var(--fg); }
+    .outcome-passed  { color: #2a7a2a; }
+    .outcome-failed  { color: var(--lighter-red); }
+    .outcome-incomplete { color: var(--muted); }
+
+    /* ── event list ───────────────────────────────────────────────── */
+    .trace  { display: flex; flex-direction: column; gap: 10px; }
+
+    .event  {
+      font-size: var(--table-size);
+      line-height: 1.5;
+      max-width: 900px;
+    }
+    .event-header {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .event-actor  { font-weight: bold; color: var(--emphasis); }
+    .event-kind   { color: var(--muted); font-size: 12px; }
+    .event-tick   { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+    /* system events */
+    .event.ev-system .event-body {
+      background: none;
+      color: var(--muted);
+      font-style: italic;
+      padding: 0;
+      border: none;
+      border-left: 3px solid var(--muted);
+      padding-left: 10px;
+    }
+    .event.ev-system.score-banner .event-body {
+      color: var(--emphasis);
+      font-style: normal;
+      font-weight: bold;
+      border-left-color: var(--emphasis);
+    }
+
+    /* user / harness messages */
+    .event.ev-user_message .event-body {
+      background: rgba(0,0,0,0.04);
+      border: 1px solid var(--muted);
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* assistant text messages */
+    .event.ev-assistant_message .event-body {
+      background: rgba(191,67,66,0.06);
+      border: 1px solid rgba(191,67,66,0.25);
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .event.ev-assistant_message { align-self: flex-end; }
+
+    /* tool calls */
+    .event.ev-tool_call details {
+      border: 1px solid var(--muted);
+      padding: 0;
+    }
+    .event.ev-tool_call summary {
+      cursor: pointer;
+      padding: 6px 10px;
+      list-style: none;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .event.ev-tool_call summary::marker { display: none; }
+    .tool-name { color: var(--emphasis); font-weight: bold; }
+    .tool-args-pre {
+      background: rgba(0,0,0,0.04);
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      border-top: 1px solid var(--muted);
+    }
+
+    /* tool results */
+    .event.ev-tool_result details {
+      border: 1px solid var(--muted);
+      padding: 0;
+    }
+    .event.ev-tool_result summary {
+      cursor: pointer;
+      padding: 6px 10px;
+      list-style: none;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .event.ev-tool_result summary::marker { display: none; }
+    .result-text {
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      border-top: 1px solid var(--muted);
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .result-pass  { color: #2a7a2a; }
+    .result-fail  { color: var(--lighter-red); }
+
+    /* long user message (the initial prompt) — collapse by default */
+    .long-message details {
+      border: 1px solid var(--muted);
+    }
+    .long-message summary {
+      padding: 6px 10px;
+      cursor: pointer;
+      list-style: none;
+      color: var(--muted);
+    }
+    .long-message-body {
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      border-top: 1px solid var(--muted);
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    #error-banner {
+      color: var(--lighter-red);
+      border: 1px solid var(--lighter-red);
+      padding: 10px 14px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="site">
+      <a class="wordmark" href="./">KTBench</a>
+      <nav>
+        <a href="./">leaderboard</a>
+        <a href="runs.html">runs</a>
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+      </nav>
+    </header>
+
+    <div id="error-banner"></div>
+    <div id="run-meta" class="run-meta"><span class="muted">loading…</span></div>
+    <div id="trace"    class="trace"><span class="muted">loading…</span></div>
+
+    <footer class="site" style="margin-top: 40px;">
+      <p>
+        <a href="runs.html">← all runs</a>
+        &middot;
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+      </p>
+    </footer>
+  </main>
+
+  <script>
+  (() => {
+    /* ── helpers ── */
+    const esc = s => String(s ?? "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    function fmtPct(n) {
+      if (n === null || n === undefined) return "—";
+      return (n * 100).toFixed(0) + "%";
+    }
+    function fmtNum(n, d = 4) {
+      if (n === null || n === undefined || !isFinite(n)) return "—";
+      return Number(n).toFixed(d);
+    }
+
+    /* ── load runs.json to find metadata for this slug ── */
+    const params = new URLSearchParams(location.search);
+    const slug   = params.get("trace") || "";
+    if (!slug) {
+      document.getElementById("error-banner").style.display = "block";
+      document.getElementById("error-banner").textContent   = "No ?trace= parameter in URL.";
+    }
+
+    document.title = `KTBench · ${slug}`;
+
+    async function loadMeta() {
+      try {
+        const r = await fetch("runs.json", { cache: "no-store" });
+        if (!r.ok) return null;
+        const d = await r.json();
+        return (d.runs || []).find(x => x.slug === slug) || null;
+      } catch { return null; }
+    }
+
+    async function loadTrace() {
+      const url = `${slug}/trace.jsonl`;
+      const r   = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`Fetch failed: ${r.status} — ${url}`);
+      const text = await r.text();
+      return text.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+    }
+
+    /* ── render run meta bar ── */
+    function renderMeta(rec) {
+      const el = document.getElementById("run-meta");
+      if (!rec) {
+        el.innerHTML = `<span class="muted">${esc(slug)}</span>`;
+        return;
+      }
+      const outcomeClass = `outcome-${rec.outcome || "incomplete"}`;
+      const axis = (rec.src_dsl && rec.tgt_dsl)
+        ? `${esc(rec.src_dsl)} → ${esc(rec.tgt_dsl)}` : "—";
+      el.innerHTML = `
+        <div class="field"><span class="label">model</span><span class="val">${esc(rec.model_full || rec.model)}</span></div>
+        <div class="field"><span class="label">problem</span><span class="val">${esc(rec.problem_id)}</span></div>
+        <div class="field"><span class="label">axis</span><span class="val">${axis}</span></div>
+        <div class="field"><span class="label">outcome</span><span class="val ${outcomeClass}">${esc(rec.outcome)}</span></div>
+        <div class="field"><span class="label">final</span><span class="val">${fmtNum(rec.final_score)}</span></div>
+        <div class="field"><span class="label">SOL</span><span class="val">${fmtNum(rec.sol_score)}</span></div>
+        <div class="field"><span class="label">correctness</span><span class="val">${fmtPct(rec.correctness_rate)}</span></div>
+        <div class="field"><span class="label">stress</span><span class="val">${fmtPct(rec.stress_pass_rate)}</span></div>
+        <div class="field"><span class="label">speedup</span><span class="val">${rec.speedup_vs_ref != null ? fmtNum(rec.speedup_vs_ref, 2) + "x" : "—"}</span></div>
+        <div class="field"><span class="label">timestamp</span><span class="val muted">${esc((rec.timestamp || "").slice(0, 19))}</span></div>
+      `;
+    }
+
+    /* ── render a single event ── */
+    function renderEvent(ev) {
+      const p    = ev.payload || {};
+      const kind = p.kind || "unknown";
+      const tick = ev.tick;
+
+      const wrap = document.createElement("div");
+      wrap.className = `event ev-${kind}`;
+
+      // Score banner gets special styling
+      if (kind === "system" && (p.note || "").startsWith("FINAL SCORE")) {
+        wrap.classList.add("score-banner");
+      }
+
+      const hdr = document.createElement("div");
+      hdr.className = "event-header";
+      const actor = ev.actor ? `<span class="event-actor">${esc(ev.actor)}</span>` : "";
+      hdr.innerHTML = `${actor}<span class="event-kind">${esc(kind)}</span><span class="event-tick">${tick}</span>`;
+      wrap.appendChild(hdr);
+
+      const body = document.createElement("div");
+      body.className = "event-body";
+
+      if (kind === "system") {
+        body.textContent = p.note || "";
+        wrap.appendChild(body);
+
+      } else if (kind === "user_message") {
+        const text = p.text || "";
+        if (text.length > 600) {
+          wrap.classList.add("long-message");
+          body.innerHTML = `<details><summary>prompt (${text.length} chars) — click to expand</summary><div class="long-message-body">${esc(text)}</div></details>`;
+        } else {
+          body.textContent = text;
+        }
+        wrap.appendChild(body);
+
+      } else if (kind === "assistant_message") {
+        body.textContent = p.text || "";
+        wrap.appendChild(body);
+
+      } else if (kind === "tool_call") {
+        const args   = p.args || {};
+        const argStr = JSON.stringify(args, null, 2);
+        body.innerHTML = `
+          <details>
+            <summary>
+              <span class="tool-name">${esc(p.name)}</span>
+              <span class="event-kind">(${Object.keys(args).join(", ")})</span>
+            </summary>
+            <pre class="tool-args-pre">${esc(argStr)}</pre>
+          </details>`;
+        wrap.appendChild(body);
+
+      } else if (kind === "tool_result") {
+        const text   = p.text || "";
+        const passed = text.startsWith(p.name + " PASSED") || text.includes("PASSED:");
+        const failed = text.startsWith(p.name + " FAILED") || text.includes("FAILED:");
+        const badge  = passed ? "result-pass" : (failed ? "result-fail" : "");
+        const preview = text.split("\n")[0].slice(0, 80);
+        body.innerHTML = `
+          <details>
+            <summary>
+              <span class="tool-name">${esc(p.name)}</span>
+              <span class="${badge}">${esc(preview)}</span>
+            </summary>
+            <div class="result-text">${esc(text)}</div>
+          </details>`;
+        wrap.appendChild(body);
+
+      } else {
+        body.textContent = JSON.stringify(p);
+        wrap.appendChild(body);
+      }
+
+      return wrap;
+    }
+
+    /* ── main ── */
+    (async () => {
+      const [meta, events] = await Promise.allSettled([loadMeta(), loadTrace()]);
+
+      renderMeta(meta.status === "fulfilled" ? meta.value : null);
+
+      const traceEl = document.getElementById("trace");
+      traceEl.innerHTML = "";
+
+      if (events.status === "rejected") {
+        const eb = document.getElementById("error-banner");
+        eb.style.display = "block";
+        eb.textContent   = "Could not load trace: " + events.reason?.message;
+        return;
+      }
+
+      for (const ev of events.value) {
+        traceEl.appendChild(renderEvent(ev));
+      }
+    })();
+  })();
+  </script>
+</body>
+</html>
