@@ -24,6 +24,29 @@
       "viewer_path": "viewer.html?trace=2026-05-23T21-29-04-00-00_ktbench-eval_chzr6pZtbATpPyJKeCWsh6"
     },
     {
+      "slug": "2026-05-23T21-29-04-00-00_ktbench-eval_mNSZYs4Lckboehodt6FDEs",
+      "log_file": "2026-05-23T21-29-04-00-00_ktbench-eval_mNSZYs4Lckboehodt6FDEs.eval",
+      "timestamp": "2026-05-23T21:29:04+00:00",
+      "scenario": "ktbench.bf16_gemm_reg2d_a100_to_h100",
+      "model": "gpt-5.5-priority",
+      "model_full": "openai/gpt-5.5-priority",
+      "persona": null,
+      "problem_id": "bf16_gemm_reg2d_a100_to_h100",
+      "problem_path": "problems2/bf16_gemm_reg2d_a100_to_h100",
+      "src_dsl": "cuda",
+      "tgt_dsl": "cuda",
+      "src_hw": "nvidia_a100_sxm",
+      "tgt_hw": "nvidia_h100_sxm",
+      "outcome": "failed",
+      "final_score": 0.0,
+      "sol_score": 0.0,
+      "correctness_rate": 0.0,
+      "stress_pass_rate": 0.0,
+      "speedup_vs_ref": null,
+      "cost_gpu_seconds": null,
+      "viewer_path": "viewer.html?trace=2026-05-23T21-29-04-00-00_ktbench-eval_mNSZYs4Lckboehodt6FDEs"
+    },
+    {
       "slug": "2026-05-23T20-57-51-00-00_ktbench-eval_JYdZHVSLzUpVtBuf7F6A9A",
       "log_file": "2026-05-23T20-57-51-00-00_ktbench-eval_JYdZHVSLzUpVtBuf7F6A9A.eval",
       "timestamp": "2026-05-23T20:57:51+00:00",
@@ -570,5 +593,5 @@
       "viewer_path": "ktbench_wkv_recurrence_a100_to_h100/viewer.html"
     }
   ],
-  "generated_at": "2026-05-23T21:31:47Z"
+  "generated_at": "2026-05-23T21:33:48Z"
 }
