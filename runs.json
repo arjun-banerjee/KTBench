@@ -114,7 +114,30 @@
       "speedup_vs_ref": 1.5889,
       "cost_gpu_seconds": null,
       "viewer_path": "viewer.html?trace=2026-05-24T17-30-20-00-00_ktbench-eval_fNhnNyQKxYEnVtr7ka5Xjw"
+    },
+    {
+      "slug": "2026-05-24T17-30-20-00-00_ktbench-eval_DbXHGivvEVLKhLmg5ATZrW",
+      "log_file": "2026-05-24T17-30-20-00-00_ktbench-eval_DbXHGivvEVLKhLmg5ATZrW.eval",
+      "timestamp": "2026-05-24T17:30:20+00:00",
+      "scenario": "ktbench.bf16_gemm_warptile_a100_to_h100",
+      "model": "gpt-5.5-priority",
+      "model_full": "openai/gpt-5.5-priority",
+      "persona": null,
+      "problem_id": "bf16_gemm_warptile_a100_to_h100",
+      "problem_path": "problems2/bf16_gemm_warptile_a100_to_h100",
+      "src_dsl": "cuda",
+      "tgt_dsl": "cuda",
+      "src_hw": "nvidia_a100_sxm",
+      "tgt_hw": "nvidia_h100_sxm",
+      "outcome": "incomplete",
+      "final_score": 0.0,
+      "sol_score": null,
+      "correctness_rate": null,
+      "stress_pass_rate": null,
+      "speedup_vs_ref": null,
+      "cost_gpu_seconds": null,
+      "viewer_path": "viewer.html?trace=2026-05-24T17-30-20-00-00_ktbench-eval_DbXHGivvEVLKhLmg5ATZrW"
     }
   ],
-  "generated_at": "2026-05-24T17:39:20Z"
+  "generated_at": "2026-05-24T17:45:21Z"
 }
