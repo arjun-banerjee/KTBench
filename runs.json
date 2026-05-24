@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-24T21:23:45Z",
+  "generated_at": "2026-05-24T21:28:46Z",
   "runs": [
     {
       "slug": "ktbench_gemm_triton_to_cuda_h100",
