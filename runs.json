@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-05-24T21:58:56Z",
+  "generated_at": "2026-05-24T22:03:57Z",
   "runs": [
     {
       "slug": "ktbench_gemm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.gemm_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_gemm_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "gemm_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -19,21 +19,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_gemm_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_gemv_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.gemv_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_gemv_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "gemv_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -47,21 +40,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_gemv_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_layer_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.layer_norm_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_layer_norm_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "layer_norm_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -75,21 +61,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_layer_norm_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_rms_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.rms_norm_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_rms_norm_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "rms_norm_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -103,21 +82,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_rms_norm_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_rope_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.rope_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_rope_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "rope_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -131,21 +103,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_rope_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_softmax_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.softmax_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_softmax_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "softmax_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -159,21 +124,14 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_softmax_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "ktbench_swiglu_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T21:01:10Z",
-      "scenario": "ktbench.swiglu_triton_to_cuda_h100",
-      "model": "gpt-5.5-2026-04-24",
+      "timestamp": "2026-05-24T21:59:59Z",
+      "scenario": "ktbench_swiglu_triton_to_cuda_h100",
+      "model": "gpt-5.1",
       "persona": "normal_translation",
       "problem_id": "swiglu_triton_to_cuda_h100",
       "src_dsl": "triton",
@@ -187,14 +145,7 @@
       "stress_pass_rate": null,
       "speedup_vs_ref": null,
       "cost_gpu_seconds": 0.0,
-      "scores": {
-        "submitted": 0.0,
-        "submit_passed": 0.0,
-        "correctness_passed": 0.0,
-        "stress_passed": 0.0,
-        "sol_above_threshold": 0.0,
-        "static_check_failed": 0.0
-      },
+      "scores": {},
       "viewer_path": "ktbench_swiglu_triton_to_cuda_h100/viewer.html"
     }
   ]
