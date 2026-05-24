@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-05-24T23:14:26Z",
+  "generated_at": "2026-05-24T23:19:28Z",
   "runs": [
     {
       "slug": "glm__ktbench_gemm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_gemm_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -24,7 +24,7 @@
     },
     {
       "slug": "glm__ktbench_gemv_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_gemv_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -45,7 +45,7 @@
     },
     {
       "slug": "glm__ktbench_layer_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_layer_norm_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -66,7 +66,7 @@
     },
     {
       "slug": "glm__ktbench_rms_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_rms_norm_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -87,7 +87,7 @@
     },
     {
       "slug": "glm__ktbench_rope_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_rope_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -108,7 +108,7 @@
     },
     {
       "slug": "glm__ktbench_softmax_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_softmax_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -129,7 +129,7 @@
     },
     {
       "slug": "glm__ktbench_swiglu_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T22:51:05Z",
+      "timestamp": "2026-05-24T23:17:31Z",
       "scenario": "ktbench_swiglu_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
@@ -179,7 +179,7 @@
     {
       "slug": "gpt55__ktbench_gemv_triton_to_cuda_h100",
       "timestamp": "2026-05-24T22:51:00Z",
-      "scenario": "ktbench_gemv_triton_to_cuda_h100",
+      "scenario": "ktbench.gemv_triton_to_cuda_h100",
       "model": "gpt-5.5-priority",
       "persona": "normal_translation",
       "problem_id": "gemv_triton_to_cuda_h100",
@@ -187,14 +187,21 @@
       "tgt_dsl": "cuda",
       "src_hw": "nvidia_a100_sxm",
       "tgt_hw": "nvidia_h100_sxm",
-      "outcome": "incomplete",
-      "final_score": null,
-      "sol_score": null,
-      "correctness_rate": null,
-      "stress_pass_rate": null,
-      "speedup_vs_ref": null,
+      "outcome": "passed",
+      "final_score": 0.5388,
+      "sol_score": 0.5388,
+      "correctness_rate": 1.0,
+      "stress_pass_rate": 1.0,
+      "speedup_vs_ref": 1.3518,
       "cost_gpu_seconds": 0.0,
-      "scores": {},
+      "scores": {
+        "submitted": 1.0,
+        "submit_passed": 1.0,
+        "correctness_passed": 1.0,
+        "stress_passed": 1.0,
+        "sol_above_threshold": 1.0,
+        "static_check_failed": 0.0
+      },
       "viewer_path": "gpt55__ktbench_gemv_triton_to_cuda_h100/viewer.html"
     },
     {
