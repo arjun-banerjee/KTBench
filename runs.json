@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-05-24T20:28:27Z",
+  "generated_at": "2026-05-24T20:33:28Z",
   "runs": [
     {
       "slug": "ktbench_gemm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_gemm_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -24,7 +24,7 @@
     },
     {
       "slug": "ktbench_gemv_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_gemv_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -45,7 +45,7 @@
     },
     {
       "slug": "ktbench_layer_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_layer_norm_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -66,7 +66,7 @@
     },
     {
       "slug": "ktbench_rms_norm_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_rms_norm_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -87,7 +87,7 @@
     },
     {
       "slug": "ktbench_rope_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_rope_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -108,7 +108,7 @@
     },
     {
       "slug": "ktbench_softmax_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_softmax_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
@@ -129,7 +129,7 @@
     },
     {
       "slug": "ktbench_swiglu_triton_to_cuda_h100",
-      "timestamp": "2026-05-24T20:19:02Z",
+      "timestamp": "2026-05-24T20:33:26Z",
       "scenario": "ktbench_swiglu_triton_to_cuda_h100",
       "model": "gpt-5.5",
       "persona": "normal_translation",
