@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ensemble trace</title>
+  <link rel="stylesheet" href="https://use.typekit.net/bsk0vur.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body style="display: block; max-width: none;">
+  <main class="wide" style="margin: 0 auto; padding: 32px 36px 64px; max-width: min(1800px, 96vw);">
+    <header style="margin-bottom: 28px;">
+      <a class="wordmark" href="index.html">ensemble</a>
+      <p class="tagline">Trace viewer</p>
+    </header>
+
+    <div class="viewer-tabs">
+      <button id="tabTimeline" class="viewer-tab active">Timeline</button>
+      <button id="tabChat" class="viewer-tab">Chat</button>
+      <span id="traceLabel" class="viewer-trace-label"></span>
+    </div>
+
+    <div class="viewer viewer-large" id="viewer">
+      <div class="controls">
+        <button id="playBtn">play</button>
+        <button id="prevBtn">prev</button>
+        <button id="nextBtn">next</button>
+        <input type="range" id="slider" min="0" max="0" value="0">
+        <span id="tickLabel">0 / 0</span>
+      </div>
+
+      <div class="stage" id="timelineStage">
+        <div class="panel" id="messagesPanel"><h4>actors</h4></div>
+        <div class="panel" id="toolsPanel"><h4>tool calls</h4></div>
+        <div class="panel" id="diffPanel"><h4>state changes</h4></div>
+      </div>
+
+      <div class="chat-stage" id="chatStage" style="display: none;">
+        <div class="chat-feed" id="chatFeed"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="viewer.js"></script>
+</body>
+</html>
