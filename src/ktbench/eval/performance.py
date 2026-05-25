@@ -237,8 +237,10 @@ def measure_performance(
     bytes_accessed: float | None = None,
 ) -> PerformanceResult:
     """
-    Time candidate AND reference on the same hardware with the same inputs.
-    Compute SOL relative to HW ceiling.
+    Time candidate AND reference (if available) on the same hardware.
+    ref_model may be None when the reference kernel is unavailable; in that
+    case speedup_vs_ref and ref_* fields are left at their defaults (-1/empty)
+    but candidate SOL is still computed.
 
     flops / bytes_accessed: if provided, used for exact SOL computation.
     If bytes_accessed is missing, it is estimated automatically from
@@ -248,10 +250,12 @@ def measure_performance(
     result = PerformanceResult()
 
     result.runtime = time_model(cand_model, inputs, device, n_warmup, n_trials)
-    result.ref_runtime = time_model(ref_model, inputs, device, n_warmup, n_trials)
+
+    if ref_model is not None:
+        result.ref_runtime = time_model(ref_model, inputs, device, n_warmup, n_trials)
 
     cand_ms = result.runtime["mean_ms"]
-    ref_ms = result.ref_runtime["mean_ms"]
+    ref_ms = result.ref_runtime.get("mean_ms", 0)
     if cand_ms > 0 and ref_ms > 0:
         result.speedup_vs_ref = ref_ms / cand_ms
 
@@ -267,19 +271,22 @@ def measure_performance(
     )
 
     result.memory = measure_memory(cand_model, inputs, device)
-    result.ref_memory = measure_memory(ref_model, inputs, device)
+    if ref_model is not None:
+        result.ref_memory = measure_memory(ref_model, inputs, device)
     cand_mem = result.memory.get("peak_memory_bytes", 0)
     ref_mem = result.ref_memory.get("peak_memory_bytes", 0)
     result.memory_ratio = cand_mem / ref_mem if ref_mem > 0 else -1.0
 
     result.kernel_launches = measure_kernel_launches(cand_model, inputs, device)
-    result.ref_kernel_launches = measure_kernel_launches(ref_model, inputs, device)
+    if ref_model is not None:
+        result.ref_kernel_launches = measure_kernel_launches(ref_model, inputs, device)
     cand_k = result.kernel_launches.get("num_kernels", 0)
     ref_k = result.ref_kernel_launches.get("num_kernels", 0)
     result.fusion_ratio = ref_k / cand_k if cand_k > 0 else -1.0
 
     result.energy = measure_energy(cand_model, inputs, device, n_trials=50)
-    result.ref_energy = measure_energy(ref_model, inputs, device, n_trials=50)
+    if ref_model is not None:
+        result.ref_energy = measure_energy(ref_model, inputs, device, n_trials=50)
     cand_e = result.energy.get("energy_mj", 0)
     ref_e = result.ref_energy.get("energy_mj", 0)
     result.energy_ratio = cand_e / ref_e if ref_e > 0 else -1.0

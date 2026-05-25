@@ -226,15 +226,15 @@ class RunCorrectnessTool(Tool):
                 metadata={"compiled": False},
             )
 
-        # Load oracle
+        # Load reference (used as correctness baseline)
         try:
-            oracle_cls = load_model_class(ctx.problem.oracle_src, "pytorch")
+            oracle_cls = load_model_class(ctx.problem.reference_tgt_src, ctx.problem.effective_ref_dsl)
         except DSLLoadError as e:
             return ToolResult(
                 tool_name=self.name,
                 success=False,
-                output=f"run_correctness FAILED: oracle load error.\n{e}",
-                metadata={"error": "oracle_load_failed"},
+                output=f"run_correctness FAILED: reference_tgt load error.\n{e}",
+                metadata={"error": "reference_load_failed"},
             )
 
         # Structured cases
@@ -445,6 +445,16 @@ class SubmitKernelTool(Tool):
                     f"submit_kernel FAILED: utilization gate — kernel appears to be a no-op "
                     f"({result.utilization_reason})."
                 ),
+                metadata=result.summary(),
+            )
+
+        # Performance measurement failure (sol_score < 0 means timing did not complete)
+        if result.sol_score < 0:
+            err = result.compile_error or "performance measurement failed"
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                output=f"submit_kernel FAILED: performance measurement did not complete.\n{err}",
                 metadata=result.summary(),
             )
 

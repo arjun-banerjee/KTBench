@@ -1,44 +1,44 @@
 """
-Problem data models and TOML loading.
+Problem data models and central config loading.
 
-Directory layout for one problem:
-  problems/{problem_id}/
-    meta.toml           – translation axis, tags, difficulty, tolerances
-    test_suite.toml     – case specs (fixed shapes) + stress ranges
-    generator.py        – make_inputs(shapes, dtype, rng, device) -> list[Tensor]
-    source.py           – kernel to translate (src_dsl, ModelNew interface)
-    oracle.py           – ground-truth reference (PyTorch eager or validated impl)
-    reference_tgt.py    – handwritten reference in tgt_dsl (performance baseline)
-    oracle_tensors/     – pre-stored oracle outputs for structured cases
-      {case_id}.safetensors
-      manifest.json
+All problems are CUDA A100 → CUDA H100 translations.
+Configuration lives in  configs/problems.toml  (one entry per problem).
+Each problem directory contains only code files:
+  source.py          — kernel to translate (ModelNew interface)
+  reference_tgt.py   — handwritten H100 reference (performance baseline)
+  generator.py       — make_inputs(shapes, dtype, rng, device) -> list[Tensor]
+  perf.py            — optional: flops(shapes, dtype) -> float
+  *.cu / *.h / *.cuh — optional companion CUDA source files
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
-import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-if sys.version_info >= (3, 11):
+if __import__("sys").version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
 
+# Fixed for all problems
+SRC_DSL = "cuda"
+SRC_HW  = "nvidia_a100_sxm"
+TGT_DSL = "cuda"
+TGT_HW  = "nvidia_h100_sxm"
 
-# ── Tolerance ─────────────────────────────────────────────────────────────────
+_REPO_ROOT      = Path(__file__).parent.parent.parent
+_CENTRAL_CONFIG = _REPO_ROOT / "configs" / "problems.toml"
 
 DTYPE_DEFAULT_TOLERANCES: dict[str, tuple[float, float]] = {
-    "fp32": (1e-4, 1e-4),   # (atol, rtol)
-    "fp16": (1e-2, 1e-2),
-    "bf16": (1e-2, 1e-2),
+    "fp32":  (1e-4, 1e-4),
+    "fp16":  (1e-2, 1e-2),
+    "bf16":  (1e-2, 1e-2),
     "int32": (0.0, 0.0),
     "int64": (0.0, 0.0),
-    "bool": (0.0, 0.0),
+    "bool":  (0.0, 0.0),
 }
 
 
@@ -48,22 +48,19 @@ class Tolerance:
     rtol: float
 
 
-# ── Test suite ────────────────────────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class CaseSpec:
-    """A single structured (curated) correctness case with fixed shape."""
     id: str
     desc: str
-    shapes: dict[str, int]         # named dimension → concrete size
-    dtype: str                     # "fp16" | "bf16" | "fp32"
+    shapes: dict[str, int]
+    dtype: str
 
 
 @dataclass(frozen=True)
 class StressConfig:
     num_trials: int
-    pass_threshold: float                     # fraction that must pass
-    shape_ranges: dict[str, tuple[int, int]]  # dim_name → (min, max) inclusive
+    pass_threshold: float
+    shape_ranges: dict[str, tuple[int, int]]
 
 
 @dataclass(frozen=True)
@@ -72,150 +69,33 @@ class TestSuite:
     stress: StressConfig
 
 
-def _load_test_suite(path: Path) -> TestSuite:
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-
-    cases = []
-    for c in raw.get("cases", []):
-        # Pass shape scalars through as-is (every generator on disk
-        # reads `shapes["N"]` as an int). The earlier list-wrap was a
-        # placeholder for per-case shape sweeps that never landed and
-        # only ever broke the consumers.
-        shapes = dict(c.get("shapes", {}))
-        cases.append(CaseSpec(
-            id=c["id"],
-            desc=c.get("desc", ""),
-            shapes=shapes,
-            dtype=c.get("dtype", "fp32"),
-        ))
-
-    stress_raw = raw.get("stress", {})
-    ranges_raw = stress_raw.get("shape_ranges", {})
-    shape_ranges = {}
-    for dim, val in ranges_raw.items():
-        if isinstance(val, list) and len(val) == 2:
-            shape_ranges[dim] = (int(val[0]), int(val[1]))
-        else:
-            shape_ranges[dim] = (int(val), int(val))
-
-    stress = StressConfig(
-        num_trials=int(stress_raw.get("num_trials", 30)),
-        pass_threshold=float(stress_raw.get("pass_threshold", 0.9)),
-        shape_ranges=shape_ranges,
-    )
-
-    return TestSuite(cases=tuple(cases), stress=stress)
-
-
-# ── Meta ──────────────────────────────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class ProblemMeta:
     problem_id: str
     name: str
-    src_dsl: str
-    src_hw: str
-    tgt_dsl: str
-    tgt_hw: str
-    tags: tuple[str, ...]
-    difficulty: int            # 1–5
-    provenance: str
-    # Per-problem tolerance overrides; fallback to dtype defaults
+    src_dsl: str = SRC_DSL
+    src_hw:  str = SRC_HW
+    tgt_dsl: str = TGT_DSL
+    tgt_hw:  str = TGT_HW
+    tags: tuple[str, ...] = field(default_factory=tuple)
+    difficulty: int = 1
+    provenance: str = ""
     tolerances: dict[str, Tolerance] = field(default_factory=dict)
 
 
-def _load_meta(path: Path) -> ProblemMeta:
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-
-    tols: dict[str, Tolerance] = {}
-    for dtype, spec in raw.get("tolerances", {}).items():
-        tols[dtype] = Tolerance(atol=float(spec["atol"]), rtol=float(spec["rtol"]))
-
-    return ProblemMeta(
-        problem_id=raw["problem_id"],
-        name=raw.get("name", raw["problem_id"]),
-        src_dsl=raw["src_dsl"],
-        src_hw=raw["src_hw"],
-        tgt_dsl=raw["tgt_dsl"],
-        tgt_hw=raw["tgt_hw"],
-        tags=tuple(raw.get("tags", [])),
-        difficulty=int(raw.get("difficulty", 1)),
-        provenance=raw.get("provenance", ""),
-        tolerances=tols,
-    )
-
-
-# ── Generator interface ───────────────────────────────────────────────────────
-
 GeneratorFn = Callable[..., list[Any]]
+FlopsFn     = Callable[..., float]
 
-
-def _load_generator(problem_dir: Path) -> GeneratorFn:
-    """
-    Load generator.py from the problem directory.
-    Must define: make_inputs(shapes, dtype, rng, device) -> list[torch.Tensor]
-    """
-    gen_path = problem_dir / "generator.py"
-    if not gen_path.exists():
-        raise FileNotFoundError(f"generator.py not found in {problem_dir}")
-
-    spec = importlib.util.spec_from_file_location("_ktbench_gen", gen_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    if not hasattr(module, "make_inputs"):
-        raise AttributeError(f"generator.py in {problem_dir} must define make_inputs()")
-    return module.make_inputs
-
-
-FlopsFn = Callable[..., float]
-
-
-def _load_perf(problem_dir: Path) -> Optional[FlopsFn]:
-    """Load an optional perf.py from the problem directory.
-
-    perf.py must define ``flops(shapes, dtype) -> float`` returning the
-    number of floating-point operations the op performs on inputs of
-    the given shape and dtype. The convention is standard SOL counting:
-    add / sub / mul / div / cmp = 1 flop each; FMA = 2 flops (counted
-    as separate mul + add); transcendentals (exp / log / rsqrt / sqrt /
-    sigmoid / tanh) = 1 flop each; a reduction over N elements = N
-    flops. Element-wise op over a tensor of shape S = prod(S) flops.
-
-    When perf.py is absent the eval still computes ``memory_util`` from
-    input + output byte counts and reports ``compute_util = -1``. Add
-    a perf.py whenever ``sol = max(compute_util, memory_util)`` should
-    reflect the compute axis (gemm, attention without tile-flash
-    tricks, anything matmul-shaped at high arithmetic intensity).
-    """
-    perf_path = problem_dir / "perf.py"
-    if not perf_path.exists():
-        return None
-
-    spec = importlib.util.spec_from_file_location("_ktbench_perf", perf_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    if not hasattr(module, "flops"):
-        return None
-    return module.flops
-
-
-# ── Problem ───────────────────────────────────────────────────────────────────
 
 @dataclass
 class Problem:
     meta: ProblemMeta
     test_suite: TestSuite
-    make_inputs: GeneratorFn    # make_inputs(shapes, dtype, rng, device) -> list[Tensor]
+    make_inputs: GeneratorFn
     problem_dir: Path
-    flops_fn: Optional[FlopsFn] = None  # optional perf.py::flops(shapes, dtype) -> float
+    flops_fn: Optional[FlopsFn] = None
 
-    # Source text (loaded lazily)
     _source_src: str | None = field(default=None, repr=False)
-    _oracle_src: str | None = field(default=None, repr=False)
     _reference_tgt_src: str | None = field(default=None, repr=False)
 
     @property
@@ -225,16 +105,14 @@ class Problem:
         return self._source_src
 
     @property
-    def oracle_src(self) -> str:
-        if self._oracle_src is None:
-            self._oracle_src = (self.problem_dir / "oracle.py").read_text()
-        return self._oracle_src
-
-    @property
     def reference_tgt_src(self) -> str:
         if self._reference_tgt_src is None:
             self._reference_tgt_src = (self.problem_dir / "reference_tgt.py").read_text()
         return self._reference_tgt_src
+
+    @property
+    def effective_ref_dsl(self) -> str:
+        return TGT_DSL
 
     def get_tolerance(self, dtype: str) -> Tolerance:
         if dtype in self.meta.tolerances:
@@ -242,24 +120,98 @@ class Problem:
         atol, rtol = DTYPE_DEFAULT_TOLERANCES.get(dtype, (1e-4, 1e-4))
         return Tolerance(atol=atol, rtol=rtol)
 
-    def oracle_tensor_path(self, case_id: str) -> Path:
-        return self.problem_dir / "oracle_tensors" / f"{case_id}.safetensors"
-
     def has_oracle_tensors(self) -> bool:
-        manifest = self.problem_dir / "oracle_tensors" / "manifest.json"
-        return manifest.exists()
+        return (self.problem_dir / "oracle_tensors" / "manifest.json").exists()
+
+
+# ── Central config ────────────────────────────────────────────────────────────
+
+_config_cache: list[dict] | None = None
+
+
+def _get_all_problem_entries() -> list[dict]:
+    global _config_cache
+    if _config_cache is None:
+        with open(_CENTRAL_CONFIG, "rb") as f:
+            _config_cache = tomllib.load(f).get("problems", [])
+    return _config_cache
+
+
+def _entry_for_id(problem_id: str) -> dict:
+    for entry in _get_all_problem_entries():
+        if entry["id"] == problem_id:
+            return entry
+    raise KeyError(f"Problem {problem_id!r} not found in {_CENTRAL_CONFIG}")
+
+
+def _parse_meta(entry: dict) -> ProblemMeta:
+    tols: dict[str, Tolerance] = {}
+    for dtype, spec in entry.get("tolerances", {}).items():
+        tols[dtype] = Tolerance(atol=float(spec["atol"]), rtol=float(spec["rtol"]))
+    return ProblemMeta(
+        problem_id=entry["id"],
+        name=entry.get("name", entry["id"]),
+        tags=tuple(entry.get("tags", [])),
+        difficulty=int(entry.get("difficulty", 1)),
+        provenance=entry.get("provenance", ""),
+        tolerances=tols,
+    )
+
+
+def _parse_test_suite(entry: dict) -> TestSuite:
+    cases = []
+    for c in entry.get("cases", []):
+        cases.append(CaseSpec(
+            id=c["id"],
+            desc=c.get("desc", ""),
+            shapes=dict(c.get("shapes", {})),
+            dtype=c.get("dtype", "fp32"),
+        ))
+    s = entry.get("stress", {})
+    ranges_raw = s.get("shape_ranges", {})
+    shape_ranges: dict[str, tuple[int, int]] = {}
+    for dim, val in ranges_raw.items():
+        if isinstance(val, list) and len(val) == 2:
+            shape_ranges[dim] = (int(val[0]), int(val[1]))
+        else:
+            shape_ranges[dim] = (int(val), int(val))
+    stress = StressConfig(
+        num_trials=int(s.get("num_trials", 30)),
+        pass_threshold=float(s.get("pass_threshold", 0.9)),
+        shape_ranges=shape_ranges,
+    )
+    return TestSuite(cases=tuple(cases), stress=stress)
+
+
+def _load_generator(problem_dir: Path) -> GeneratorFn:
+    gen_path = problem_dir / "generator.py"
+    if not gen_path.exists():
+        raise FileNotFoundError(f"generator.py not found in {problem_dir}")
+    spec = importlib.util.spec_from_file_location("_ktbench_gen", gen_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "make_inputs"):
+        raise AttributeError(f"generator.py in {problem_dir} must define make_inputs()")
+    return module.make_inputs
+
+
+def _load_perf(problem_dir: Path) -> Optional[FlopsFn]:
+    perf_path = problem_dir / "perf.py"
+    if not perf_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("_ktbench_perf", perf_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "flops", None)
 
 
 def load_problem(problem_dir: str | Path) -> Problem:
-    d = Path(problem_dir)
-    meta = _load_meta(d / "meta.toml")
-    suite = _load_test_suite(d / "test_suite.toml")
-    gen = _load_generator(d)
-    flops_fn = _load_perf(d)
-    return Problem(
-        meta=meta,
-        test_suite=suite,
-        make_inputs=gen,
-        problem_dir=d,
-        flops_fn=flops_fn,
-    )
+    """Load a problem by its directory path. Metadata is read from configs/problems.toml."""
+    d = Path(problem_dir).resolve()
+    problem_id = d.name
+    entry = _entry_for_id(problem_id)
+    meta  = _parse_meta(entry)
+    suite = _parse_test_suite(entry)
+    gen   = _load_generator(d)
+    flops = _load_perf(d)
+    return Problem(meta=meta, test_suite=suite, make_inputs=gen, problem_dir=d, flops_fn=flops)

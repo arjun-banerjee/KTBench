@@ -13,14 +13,14 @@ API keys (set in environment before running):
 
 Quick start (all four frontier models on one problem):
   python scripts/run_sweep.py \\
-    --problems problems/softmax_h200_to_triton \\
+    --problems problems/softmax_a100_to_h100 \\
     --models openai/o3 anthropic/claude-opus-4-7 google/gemini-2.5-pro xai/grok-3 \\
     --device 0 \\
     --out results/sweep.json
 
 Multiple problems:
   python scripts/run_sweep.py \\
-    --problems problems/softmax_h200_to_triton problems/matmul_h200_to_triton \\
+    --problems problems/softmax_a100_to_h100 problems/matmul_h200_to_triton \\
     --models openai/gpt-4o anthropic/claude-sonnet-4-6 \\
     --out results/sweep.json
 """
@@ -29,12 +29,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 _REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO / "src"))
 sys.path.insert(0, str(_REPO))
+
+# Load .env from repo root so API keys don't have to be manually exported.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_REPO / ".env", override=False)
+except ImportError:
+    pass
 
 
 def _build_leaderboard(eval_logs) -> list[dict]:

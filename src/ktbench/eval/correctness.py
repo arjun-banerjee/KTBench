@@ -214,8 +214,12 @@ def _run_one_case(
             cand_model = cand_model.to(device) if hasattr(cand_model, "to") else cand_model
             cand_out = cand_model.forward(*cand_inputs)
             torch.cuda.synchronize(device)
+            # Probe allocation forces any asynchronous CUDA faults (e.g. illegal
+            # memory access) to surface here, attributed to this kernel rather
+            # than bleeding into the next case's make_inputs call.
+            torch.zeros(1, device=device)
     except Exception as e:
-        return False, {}, f"candidate forward failed: {e}"
+        return False, {}, f"candidate kernel error: {e}"
 
     # Aliasing check: candidate must not return the oracle buffer or input buffers
     oracle_ptrs = {

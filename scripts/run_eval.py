@@ -3,7 +3,7 @@ Evaluate a single candidate against one problem.
 
 Usage:
     python scripts/run_eval.py \
-        --problem problems/softmax_h200_to_triton \
+        --problem problems/softmax_a100_to_h100 \
         --candidate my_kernel.py \
         --device 0 \
         --verbose
@@ -37,7 +37,11 @@ def main():
         print("ERROR: CUDA not available", file=sys.stderr)
         sys.exit(1)
 
-    problem = load_problem(args.problem)
+    import os
+
+    problem_path = Path(args.problem).resolve()
+    os.environ["KTBENCH_PROBLEM_PATH"] = str(problem_path)
+    problem = load_problem(problem_path)
     candidate_src = Path(args.candidate).read_text()
 
     result = eval_translation(

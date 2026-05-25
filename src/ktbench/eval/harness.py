@@ -47,8 +47,10 @@ def _reference_at_fault(ref_model: Any, inputs: list, original_exc: Exception) -
     Try calling the reference once with the same inputs. If that raises,
     the reference is broken. If it succeeds, the failure was on the
     candidate side (or downstream timing / nsight / memory measurement).
-    Used to make the error message in the trace name the right actor.
+    Returns False when ref_model is None (only candidate was measured).
     """
+    if ref_model is None:
+        return False
     try:
         with torch.no_grad():
             ref_model.forward(*inputs)
@@ -185,20 +187,14 @@ def eval_translation(
         result.eval_wall_time_s = time.monotonic() - t_start
         return result
 
-    # Load oracle and reference classes (always present on eval machine)
+    # Load reference (used for both correctness checks and speedup_vs_ref)
     try:
-        oracle_cls = load_model_class(problem.oracle_src, "pytorch")
-    except DSLLoadError as e:
-        result.compile_error = f"oracle load failed: {e}"
-        result.eval_wall_time_s = time.monotonic() - t_start
-        return result
-
-    try:
-        ref_cls = load_model_class(problem.reference_tgt_src, problem.meta.tgt_dsl)
+        ref_cls = load_model_class(problem.reference_tgt_src, problem.effective_ref_dsl)
     except DSLLoadError as e:
         result.compile_error = f"reference_tgt load failed: {e}"
         result.eval_wall_time_s = time.monotonic() - t_start
         return result
+    oracle_cls = ref_cls
 
     # ── [3] Correctness: structured cases ────────────────────────────────────
     if verbose:
@@ -256,9 +252,11 @@ def eval_translation(
     if hasattr(cand_model, "to"):
         cand_model = cand_model.to(device)
 
-    ref_model = ref_cls()
-    if hasattr(ref_model, "to"):
-        ref_model = ref_model.to(device)
+    ref_model = None
+    if ref_cls is not None:
+        ref_model = ref_cls()
+        if hasattr(ref_model, "to"):
+            ref_model = ref_model.to(device)
 
     # Wrap perf measurement so a broken reference baseline does not
     # surface as an opaque "unexpected error" attributed to the

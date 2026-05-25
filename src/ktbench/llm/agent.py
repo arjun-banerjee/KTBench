@@ -54,21 +54,24 @@ _SYSTEM_PROMPT_SINGLE_SHOT = (
     "are freshly randomized each run."
 )
 
-_SYSTEM_PROMPT_TOOLS = (
+_SYSTEM_PROMPT_TOOLS_TMPL = (
     "You are an expert GPU kernel engineer specializing in DSL translation. "
     "Translate the given source kernel to the target DSL and hardware, then verify "
     "and optimize it using the available tools.\n\n"
-    "Workflow:\n"
-    "1. Use get_gpu_specs to understand the target hardware.\n"
-    "2. Write a ModelNew implementation and call compile_kernel.\n"
-    "3. Call run_correctness to verify numerical correctness.\n"
-    "4. Optimize for the target hardware's SOL (Speed-of-Light).\n"
-    "5. Call submit_kernel when the kernel is correct and optimized.\n\n"
+    "You have {max_turns} turns. Each turn is one response from you, optionally "
+    "with tool calls. submit_kernel records your final result and ends the session — "
+    "call it once when you are satisfied.\n\n"
+    "Iteration loop: write a kernel → compile_kernel → run_correctness → fix or "
+    "optimize → repeat → submit_kernel. There is no required order and no required "
+    "minimum number of iterations.\n\n"
+    "Scoring: correctness × stress_pass_rate × SOL (Speed-of-Light — hardware "
+    "utilization on a 0–1 scale). SOL is bounded by physics; you cannot game it "
+    "by slowing a baseline.\n\n"
     "Rules:\n"
     "- Do not hardcode shapes or values — inputs are freshly randomized each run.\n"
-    "- Call submit_kernel exactly once when done — it ends the session.\n"
-    "- The final score is correctness × stress_pass_rate × SOL (hardware utilization).\n"
-    "  SOL is bounded by physics; you cannot game it by slowing a baseline."
+    "- The kernel must actually execute on the GPU — pure PyTorch fallbacks or "
+    "dead CUDA extensions that never launch will be rejected by the utilization gate.\n"
+    "- Call submit_kernel exactly once when done — it ends the session."
 )
 
 _NO_TOOL_CALLS_NUDGE = (
@@ -76,9 +79,13 @@ _NO_TOOL_CALLS_NUDGE = (
     "or submit_kernel to make progress."
 )
 
+_TURN_WARNING = (
+    "Heads up: you have {turns_left} turn(s) left. "
+    "If your kernel is correct, consider calling submit_kernel soon."
+)
+
 _FINAL_TURN_NUDGE = (
-    "This is your last turn. You must call submit_kernel now with your best "
-    "kernel implementation."
+    "This is your last turn. Call submit_kernel now with your best kernel implementation."
 )
 
 
@@ -203,10 +210,22 @@ class TranslationAgent:
             raise ValueError("tool_ctx is required when tools are provided")
 
         prompt = build_prompt(self.problem)
+        gpu_specs_text = self._prefetch_gpu_specs()
 
         if self.api_kind == "responses":
-            return self._tool_loop_responses(prompt)
-        return self._tool_loop_chat(prompt)
+            return self._tool_loop_responses(prompt, gpu_specs_text)
+        return self._tool_loop_chat(prompt, gpu_specs_text)
+
+    def _prefetch_gpu_specs(self) -> str:
+        """Call get_gpu_specs once before turn 1 and return its output text."""
+        gpu_tool = self.tool_map.get("get_gpu_specs")
+        if gpu_tool is None:
+            return ""
+        try:
+            result = gpu_tool.execute(self.tool_ctx)
+            return result.output
+        except Exception:
+            return ""
 
     def _execute_tool(self, tool_name: str, args: dict) -> "ToolResult":
         from tools.tools import ToolResult as TR
@@ -229,18 +248,23 @@ class TranslationAgent:
                 metadata={"error": str(exc)},
             )
 
-    def _tool_loop_responses(self, prompt: str):
+    def _tool_loop_responses(self, prompt: str, gpu_specs_text: str = ""):
         """Responses-API tool-calling loop."""
-        instructions = _SYSTEM_PROMPT_TOOLS
+        instructions = _SYSTEM_PROMPT_TOOLS_TMPL.format(max_turns=self.max_turns)
         input_items: list[dict] = [{"role": "user", "content": prompt}]
+        if gpu_specs_text:
+            input_items.append({"role": "user", "content": f"[Hardware specs pre-fetched]\n{gpu_specs_text}"})
         tool_schemas = [t.to_responses_schema() for t in self.tools]
 
         for turn_idx in range(self.max_turns):
             if self.verbose:
                 print(f"[TranslationAgent] turn {turn_idx + 1}/{self.max_turns}")
 
-            if turn_idx == self.max_turns - 1:
+            turns_left = self.max_turns - turn_idx
+            if turns_left == 1:
                 input_items.append({"role": "user", "content": _FINAL_TURN_NUDGE})
+            elif turns_left <= max(3, self.max_turns // 10):
+                input_items.append({"role": "user", "content": _TURN_WARNING.format(turns_left=turns_left)})
 
             create_kwargs: dict[str, Any] = {
                 "model": self.model,
@@ -318,20 +342,25 @@ class TranslationAgent:
         # Fell through max_turns with no submit — return None
         return None
 
-    def _tool_loop_chat(self, prompt: str):
+    def _tool_loop_chat(self, prompt: str, gpu_specs_text: str = ""):
         """Chat Completions tool-calling loop."""
         messages: list[dict] = [
-            {"role": "system", "content": _SYSTEM_PROMPT_TOOLS},
+            {"role": "system", "content": _SYSTEM_PROMPT_TOOLS_TMPL.format(max_turns=self.max_turns)},
             {"role": "user", "content": prompt},
         ]
+        if gpu_specs_text:
+            messages.append({"role": "user", "content": f"[Hardware specs pre-fetched]\n{gpu_specs_text}"})
         tool_schemas = [t.to_chat_schema() for t in self.tools]
 
         for turn_idx in range(self.max_turns):
             if self.verbose:
                 print(f"[TranslationAgent] turn {turn_idx + 1}/{self.max_turns}")
 
-            if turn_idx == self.max_turns - 1:
+            turns_left = self.max_turns - turn_idx
+            if turns_left == 1:
                 messages.append({"role": "user", "content": _FINAL_TURN_NUDGE})
+            elif turns_left <= max(3, self.max_turns // 10):
+                messages.append({"role": "user", "content": _TURN_WARNING.format(turns_left=turns_left)})
 
             # LLM call with retries
             response = None

@@ -1,9 +1,0 @@
-[persona]
-name        = "ktbench_harness"
-mode        = "scripted"
-description = "Non-LLM harness persona that sends the problem prompt and stays silent."
-
-[persona.style]
-tone       = "neutral"
-verbosity  = "minimal"
-formality  = "high"

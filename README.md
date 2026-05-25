@@ -1,19 +1,8 @@
-# KTBench — Kernel Translation Benchmark
+# KTBench
 
-KTBench evaluates whether an LLM can translate a GPU kernel from one DSL and hardware target to another — correctly and efficiently. Given a working implementation in `(src_dsl, src_hw)`, the model must produce a semantically equivalent implementation in `(tgt_dsl, tgt_hw)` that saturates the target hardware.
+Benchmark for evaluating whether an LLM can translate a CUDA GPU kernel from **NVIDIA A100 → NVIDIA H100** — correctly and efficiently.
 
-**Official eval fleet:** up to 8× NVIDIA H200 SXM (primary), up to 2× NVIDIA A100 SXM (secondary), AWS Trainium2 (NKI, TBD).
-
----
-
-## Why KTBench
-
-Existing kernel benchmarks (KernelBench, robust-kbench) evaluate optimization from a PyTorch reference. They have well-documented reward hacking problems: models learn to exploit the evaluator rather than write real kernels. KTBench is designed around four principles to prevent this:
-
-1. **Tensor values are always freshly randomized.** A kernel cannot pass by hardcoding outputs — the values differ every run.
-2. **Stress cases randomize both shapes and values.** Shape-specific hacks fail on 30 trials with randomly sampled dimensions.
-3. **Performance is SOL fraction, not speedup ratio.** Speed-of-Light = `achieved_throughput / hw_peak`. It is bounded by physics and cannot be gamed by slowing the baseline.
-4. **The eval subprocess cannot observe the grader.** Stack introspection, monkey-patching, and process-kill attempts are blocked statically and at the process-group level.
+Given a working A100 CUDA kernel, the model must produce a semantically equivalent H100 CUDA kernel that exploits H100-specific hardware (WGMMA, TMA, producer-consumer pipelines). Performance is measured as **Speed-of-Light fraction** (`achieved_throughput / hw_peak`), which is bounded by physics and cannot be gamed by slowing the baseline.
 
 ---
 
@@ -22,239 +11,276 @@ Existing kernel benchmarks (KernelBench, robust-kbench) evaluate optimization fr
 ```bash
 git clone https://github.com/arjun-banerjee/KTBench.git
 cd KTBench
-pip install -e ".[triton]"              # core eval + Triton DSL
-pip install -e ".[triton,llm]"          # + openai SDK for single-model agent
-pip install -e ".[triton,llm,inspect]"  # + Inspect AI for multi-model frontier sweep
+pip install -e "."             # core eval only
+pip install -e ".[llm]"        # + openai SDK for the agent loop
+pip install -e ".[inspect]"    # + Inspect AI for multi-model sweeps
 ```
 
 Requires Python 3.11+, PyTorch 2.3+, CUDA 12.x.
 
 ---
 
-## Quick Start
+## Problem Format
 
-### Evaluate a candidate kernel
+### Directory layout
+
+Each problem lives in `problems/{problem_id}/`:
+
+```
+problems/softmax_a100_to_h100/
+├── source.py        — A100 CUDA kernel to translate (defines ModelNew interface)
+├── reference_tgt.py — handwritten H100 CUDA reference (performance baseline)
+├── generator.py     — make_inputs(shapes, dtype, rng, device) → list[Tensor]
+└── perf.py          — optional: flops(shapes, dtype) → float
+```
+
+All metadata and test configuration lives in **one place**: `configs/problems.toml`. There are no per-problem `meta.toml` or `test_suite.toml` files.
+
+### `configs/problems.toml`
+
+Every problem is one `[[problems]]` entry:
+
+```toml
+[[problems]]
+id         = "softmax_a100_to_h100"
+name       = "Online Softmax (CUDA A100 → CUDA H100)"
+dir        = "problems/softmax_a100_to_h100"
+difficulty = 2                                       # 1–5
+tags       = ["softmax", "reduction", "fp16", "hw-translation"]
+provenance = "kernel from <source> (license)"
+
+# Per-dtype tolerance overrides (optional — defaults: fp16/bf16 atol=rtol=1e-2, fp32 1e-4)
+tolerances = {fp16 = {atol = 0.01, rtol = 0.01}, bf16 = {atol = 0.01, rtol = 0.01}}
+
+# Structured cases: fixed shapes, freshly randomised values every run.
+cases = [
+  {id = "small",   desc = "small square",  dtype = "fp16", shapes = {N = 128,  D = 256}},
+  {id = "large_D", desc = "wide rows",     dtype = "fp16", shapes = {N = 512,  D = 4096}},
+  {id = "nonpow2", desc = "non-power-of-2",dtype = "fp16", shapes = {N = 1000, D = 300}},
+]
+
+# Stress: shapes AND values are random — shape-specific hacks fail here.
+stress = {num_trials = 30, pass_threshold = 0.90, shape_ranges = {N = [1, 4096], D = [1, 8192]}}
+```
+
+**Field reference:**
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | yes | Must match the problem's directory name |
+| `name` | yes | Human-readable title |
+| `dir` | yes | Relative path to the problem directory |
+| `difficulty` | yes | 1–5 |
+| `tags` | yes | List of strings, e.g. `["gemm", "bfloat16"]` |
+| `provenance` | yes | Source of the A100 kernel and license |
+| `tolerances` | no | Per-dtype `{atol, rtol}` overrides |
+| `cases` | yes | At least 3 structured cases with varied shapes |
+| `stress` | yes | `num_trials`, `pass_threshold`, `shape_ranges` |
+
+### `source.py`
+
+The A100 CUDA kernel to translate. Must define `ModelNew` with a `forward` method that the grader calls as `ModelNew().forward(*inputs)`:
+
+```python
+import torch, torch.nn as nn
+from torch.utils.cpp_extension import load_inline
+
+_CUDA_SRC = r"""
+__global__ void my_kernel(...) { ... }
+"""
+_mod = load_inline(name="my_kernel", cuda_sources=[_CUDA_SRC], ...)
+
+class ModelNew(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = torch.empty_like(x)
+        _mod.my_kernel(x, out)
+        return out
+```
+
+### `reference_tgt.py`
+
+A hand-optimised H100 CUDA implementation of the same operation. Same `ModelNew` interface. Used as the performance baseline — the grader times both candidate and reference on the same hardware and reports `speedup_vs_ref` as context.
+
+### `generator.py`
+
+```python
+import numpy as np, torch
+
+def make_inputs(shapes: dict, dtype: str, rng: np.random.Generator, device) -> list:
+    # Use rng for ALL randomness. Values differ every call.
+    N, D = shapes["N"], shapes["D"]
+    dt = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[dtype]
+    x = torch.from_numpy(rng.standard_normal((N, D)).astype("float32")).to(dtype=dt, device=device)
+    return [x]
+```
+
+Returns a flat `list` of `torch.Tensor` objects. The grader calls `forward(*inputs)`.
+
+### `perf.py` (optional)
+
+```python
+def flops(shapes: dict, dtype: str) -> float:
+    # Return total floating-point operations for one forward pass.
+    # Convention: add/sub/mul/div = 1 flop each; FMA = 2; transcendentals = 1.
+    N, D = shapes["N"], shapes["D"]
+    return float(5 * N * D)  # example: 5 ops per element
+```
+
+When present, the grader uses this to compute `compute_util` (compute SOL). Without it, only `memory_util` (memory SOL) is computed.
+
+### Adding a new problem
+
+1. Create the directory: `mkdir problems/{problem_id}/`
+2. Write `source.py`, `reference_tgt.py`, `generator.py` (and optionally `perf.py`)
+3. Add an entry to `configs/problems.toml` following the format above
+4. Verify it loads: `python -c "from ktbench import load_problem; load_problem('problems/{problem_id}')"`
+
+---
+
+## Running Evaluations
+
+### Evaluate one candidate against one problem
 
 ```bash
 python scripts/run_eval.py \
-    --problem problems/softmax_h200_to_triton \
+    --problem problems/softmax_a100_to_h100 \
     --candidate my_kernel.py \
     --device 0 \
     --verbose
 ```
 
-The script runs the full 6-stage pipeline and prints a JSON result summary. Exit code 0 if the candidate compiles and passes all correctness cases; 1 otherwise.
+Prints a JSON result summary. Exit code 0 if the candidate compiles and passes all correctness cases; 1 otherwise. Pass `--json-out result.json` to write to a file.
 
-### Generate a translation with an LLM
+```
+python scripts/run_eval.py --help
 
-**Single-shot** — one LLM call, extract ModelNew, optionally evaluate:
-
-```bash
-# OpenAI
-OPENAI_API_KEY=sk-... python scripts/run_agent.py \
-    --problem problems/softmax_h200_to_triton \
-    --model o3 --reasoning-effort medium \
-    --out candidate.py --eval --device 0
-
-# Azure OpenAI
-AZURE_OPENAI_API_KEY=... python scripts/run_agent.py \
-    --problem problems/softmax_h200_to_triton \
-    --model gpt-4.1 --provider azure \
-    --base-url https://my-resource.cognitiveservices.azure.com/openai/v1/ \
-    --out candidate.py --eval
-
-# xAI Grok (Chat Completions)
-XAI_API_KEY=... python scripts/run_agent.py \
-    --problem problems/softmax_h200_to_triton \
-    --model grok-3 --provider grok \
-    --out candidate.py --eval
+  --problem     Path to problem directory
+  --candidate   Path to candidate .py file
+  --device      CUDA device index (default: 0)
+  --seed        RNG seed (default: random)
+  --n-timing    Timing trials (default: 20)
+  --verbose     Print pipeline stage output
+  --json-out    Write result JSON to file
 ```
 
-**Multi-turn with tools** — model iteratively compiles, tests, and submits:
+### Sweep multiple models across multiple problems
+
+Requires `pip install -e ".[inspect]"` and API keys in the environment.
 
 ```bash
-OPENAI_API_KEY=sk-... python scripts/run_agent.py \
-    --problem problems/softmax_h200_to_triton \
-    --model o3 --reasoning-effort medium \
-    --multi-turn --max-turns 10 --device 0 --verbose
-```
-
-In multi-turn mode the model has access to five tools: `static_check`,
-`compile_kernel`, `run_correctness`, `get_gpu_specs`, and `submit_kernel`.
-The session ends when the model calls `submit_kernel`.
-
-### Benchmark frontier models (multi-provider sweep)
-
-Compare multiple models side-by-side with a single command. Requires `pip install -e ".[inspect]"`.
-
-```bash
-# Install Inspect AI support
-pip install -e ".[triton,inspect]"
-
-# Benchmark four frontier models on one problem
-OPENAI_API_KEY=sk-...  \
-ANTHROPIC_API_KEY=sk-ant-...  \
-GOOGLE_API_KEY=...  \
-XAI_API_KEY=...  \
+OPENAI_API_KEY=sk-... \
+ANTHROPIC_API_KEY=sk-ant-... \
 python scripts/run_sweep.py \
-    --problems problems/softmax_h200_to_triton \
-    --models openai/o3 anthropic/claude-opus-4-7 google/gemini-2.5-pro xai/grok-3 \
+    --problems problems/softmax_a100_to_h100 problems/bf16_gemv_a100_to_h100 \
+    --models openai/o3 anthropic/claude-opus-4-7 \
     --device 0 \
     --out results/sweep.json
 ```
 
-Output:
-```
-MODEL                                    PROBLEM                                   SCORE
--------------------------------------------------------------------------------------------------------
-anthropic/claude-opus-4-7               softmax_h200_to_triton                   0.8312
-openai/o3                               softmax_h200_to_triton                   0.7941
-google/gemini-2.5-pro                   softmax_h200_to_triton                   0.7450
-xai/grok-3                              softmax_h200_to_triton                   0.6810
-```
-
-Results are also saved to `results/sweep.json`. Raw Inspect AI logs go to `results/inspect_logs/`.
-
-You can also invoke Inspect AI directly for more control:
+To run every problem in the benchmark:
 
 ```bash
-inspect eval integrations/inspect_ai.py \
-    --model openai/o3 \
-    --model anthropic/claude-opus-4-7 \
-    -T problem_path=problems/softmax_h200_to_triton \
-    -T max_messages=30 \
-    --log-dir results/inspect_logs
+python -c "
+from ktbench.dataset import load_all_problems
+print(' '.join(str(p.problem_dir) for p in load_all_problems()))
+" | xargs -I{} echo {}   # prints all 18 problem paths
+```
+
+Then pass them all to `--problems`.
+
+```
+python scripts/run_sweep.py --help
+
+  --problems    One or more problem directory paths
+  --models      Model strings: openai/o3, anthropic/claude-opus-4-7, google/gemini-2.5-pro, xai/grok-3
+  --device      CUDA device index (default: 0)
+  --seed        RNG seed
+  --n-timing    Timing trials per submission (default: 20)
+  --max-turns   Message cap per session (default: 30)
+  --log-dir     Inspect AI log directory (default: results/inspect_logs)
+  --out         Write leaderboard JSON to this file
 ```
 
 **API keys per provider:**
 
-| Model prefix | Env var | Example |
-|---|---|---|
-| `openai/` | `OPENAI_API_KEY` | `openai/o3`, `openai/gpt-4o` |
-| `anthropic/` | `ANTHROPIC_API_KEY` | `anthropic/claude-opus-4-7` |
-| `google/` | `GOOGLE_API_KEY` | `google/gemini-2.5-pro` |
-| `xai/` | `XAI_API_KEY` | `xai/grok-3` |
-
-### Multi-actor runs via ensemble
-
-KTBench's eval harness is harness-agnostic; the same five tools that drive
-the Inspect AI integration also drive an [ensemble](https://github.com/tejasprabhune/ensemble)
-integration that adds two affordances Inspect AI does not: **multi-actor
-scenarios** (an author writes the kernel, a separate reviewer agent audits
-the trace as the author builds it), and **a trace viewer** with a leaderboard
-and per-run pages published to GitHub Pages.
-
-Install:
-
-```bash
-pip install -e '.[ensemble]'
-# plus ensemble itself, from a local checkout for now:
-# pip install -e ~/Documents/ensemble/python/ensemble
-```
-
-Single-agent translation, ensemble-driven:
-
-```bash
-KTBENCH_PROBLEM_PATH=problems/softmax_h200_to_triton \
-KTBENCH_MODEL=claude-sonnet-4-5 \
-KTBENCH_PERSONA=normal_translation \
-ensemble run ktbench.translate_problem --world ktbench \
-    --package-dir scenarios
-```
-
-Multi-actor (author + reviewer) on the same problem:
-
-```bash
-KTBENCH_PROBLEM_PATH=problems/softmax_h200_to_triton \
-KTBENCH_AUTHOR_MODEL=claude-sonnet-4-5 \
-KTBENCH_REVIEWER_MODEL=claude-sonnet-4-5 \
-KTBENCH_AUTHOR_PERSONA=normal_translation \
-ensemble run ktbench.judge_translate --world ktbench \
-    --package-dir scenarios
-```
-
-The author has the full tool kit (`static_check`, `compile_kernel`,
-`run_correctness`, `get_gpu_specs`, `submit_kernel`); the reviewer has the
-read-only subset (`static_check`, `run_correctness`) and the `code_reviewer`
-persona that redirects the role to audit rather than authoring. The grader
-returns the same six cells in both scenarios (`submitted`, `submit_passed`,
-`correctness_passed`, `stress_passed`, `utilization_passed`,
-`static_check_failed`), so the lift from adding a reviewer is directly
-comparable across the two configurations.
-
-Each run writes a JSONL trace under `traces/`. To publish the leaderboard
-and per-run viewer pages to GitHub Pages:
-
-```bash
-python scripts/publish_traces.py --ensemble-root ~/Documents/ensemble
-```
-
-The script walks `traces/`, builds `runs.json` at the gh-pages root (with
-per-run `final_score`, `sol_score`, `correctness_rate`, `stress_pass_rate`,
-and the translation axis), copies the local `site/` (the leaderboard + run
-index), and copies the ensemble viewer assets next to each trace so deep
-links resolve. Pass `--watch 300` to republish on a five-minute cadence
-while a sweep is running.
-
-The available personas under `personas/`:
-
-| Persona | Role | Use case |
-|---|---|---|
-| `normal_translation` | Baseline / control | Default for translate_problem |
-| `normal` | Baseline (CUDA write task) | Comparing translation framing against a write task framing |
-| `methodical_engineer` | Intervention (lint-first, careful) | Compare against `normal` to measure value of a methodical style |
-| `speed_obsessed` | Intervention (aggressive optimisation) | Red-team the eval; trips the static checker more often |
-| `code_reviewer` | Role redirect (audit, no authoring) | Reviewer slot in `judge_translate` |
-
-The ensemble integration lives at `integrations/ensemble.py`; scenarios at
-`scenarios/translate_problem.py` and `scenarios/judge_translate.py`. The
-adapter exposes a `KTBenchState`, the five wrapped `PluginTool`s, and six
-grader predicates; both scenarios are short (under 100 lines each) and
-serve as templates for new translation-flavoured scenarios.
-
-### Add a new problem
-
-```bash
-python scripts/add_problem.py \
-    --id flash_attn_h200_to_hip \
-    --src-dsl cuda --src-hw nvidia_h200_sxm \
-    --tgt-dsl hip  --tgt-hw amd_mi300x \
-    --name "Flash Attention 2 Forward (H200 CUDA → MI300X HIP)" \
-    --tags attention,fp16,tiling \
-    --difficulty 4
-```
-
-This scaffolds `problems/flash_attn_h200_to_hip/` with template files. Fill in `source.py`, `oracle.py`, `reference_tgt.py`, and `generator.py`, then build oracle tensors:
-
-```bash
-python scripts/build_oracle_tensors.py \
-    --problem problems/flash_attn_h200_to_hip \
-    --device 0
-```
+| Model prefix | Env var |
+|---|---|
+| `openai/` | `OPENAI_API_KEY` |
+| `anthropic/` | `ANTHROPIC_API_KEY` |
+| `google/` | `GOOGLE_API_KEY` |
+| `xai/` | `XAI_API_KEY` |
 
 ### Use as a library
 
 ```python
 from ktbench import load_problem, eval_translation, build_prompt
-from ktbench.llm import make_client, TranslationAgent
+from ktbench.dataset import load_all_problems
 
-problem = load_problem("problems/softmax_h200_to_triton")
+# Load one problem
+problem = load_problem("problems/softmax_a100_to_h100")
 
-# Build the prompt manually (e.g. to call your own model)
+# Load all 18 problems (reads configs/problems.toml)
+problems = load_all_problems()
+hard = load_all_problems(max_difficulty=4)
+gemm = load_all_problems(tags=["gemm"])
+
+# Build the prompt
 prompt = build_prompt(problem)
 
-# Or use the built-in agent (requires openai package + API key)
-client = make_client(api_key_env="OPENAI_API_KEY")
-agent  = TranslationAgent(client=client, model="gpt-4o", problem=problem)
-candidate_src = agent.generate()
-
 # Evaluate a candidate
-result = eval_translation(candidate_src, problem, device=0, verbose=True)
+with open("my_kernel.py") as f:
+    candidate_src = f.read()
 
-print(result.final_score)      # correctness × stress_pass_rate × SOL
-print(result.speedup_vs_ref)   # vs handwritten reference_tgt.py
-print(result.summary())        # full metric dict
+result = eval_translation(candidate_src, problem, device=0, verbose=True)
+print(result.final_score)        # correctness × stress × SOL
+print(result.speedup_vs_ref)     # vs reference_tgt.py
+print(result.summary())          # full metric dict
 ```
+
+---
+
+## Updating Results / Leaderboard
+
+The leaderboard is driven by `results/sweep.json`. To update it, re-run the sweep and commit the new file:
+
+```bash
+# Run the sweep (all 18 problems, 4 models)
+PROBLEM_PATHS=$(python -c "
+from ktbench.dataset import load_all_problems
+print(' '.join(str(p.problem_dir) for p in load_all_problems()))
+")
+
+OPENAI_API_KEY=sk-... \
+ANTHROPIC_API_KEY=sk-ant-... \
+GOOGLE_API_KEY=... \
+XAI_API_KEY=... \
+python scripts/run_sweep.py \
+    --problems $PROBLEM_PATHS \
+    --models openai/o3 anthropic/claude-opus-4-7 google/gemini-2.5-pro xai/grok-3 \
+    --device 0 \
+    --out results/sweep.json
+
+# Commit the updated results
+git add results/sweep.json
+git commit -m "update leaderboard results"
+git push
+```
+
+`results/sweep.json` is a flat list of result objects:
+
+```json
+[
+  {
+    "model": "anthropic/claude-opus-4-7",
+    "problem": "softmax_a100_to_h100",
+    "final_score": 0.8312,
+    "detail": "correctness=100% stress=100% sol=0.8312"
+  },
+  ...
+]
+```
+
+Raw Inspect AI logs are written to `results/inspect_logs/` and are not committed.
 
 ---
 
@@ -264,323 +290,44 @@ print(result.summary())        # full metric dict
 candidate_src
     │
     ▼
-[1] Static analysis          — AST + regex; blocks try/except fallbacks,
-    (antihack.py)              process kills, stack introspection, grader imports
-    │  fail → score 0
+[1] Static analysis     — blocks try/except fallbacks, process kills,
+    antihack.py           stack introspection, grader imports
+    │ fail → score 0
     ▼
-[2] Compilation              — DSL-specific load (exec or tempfile)
-    (registry/dsl.py)
-    │  fail → compile_fail
+[2] Compilation         — exec() the source, instantiate ModelNew
+    registry/dsl.py
+    │ fail → compile_error
     ▼
-[3] Structured correctness   — fixed shapes, FRESHLY RANDOMIZED values
-    (correctness.py)           must pass ALL curated cases
-    │  fail → score 0
+[3] Structured cases    — fixed shapes, freshly randomised values
+    correctness.py        must pass ALL curated cases
+    │ fail → score 0
     ▼
-[4] Stress testing           — random shapes + random values, 30 trials
-    (correctness.py)           must pass ≥90% to unlock performance score
+[4] Stress testing      — random shapes + random values, 30 trials
+    correctness.py        must pass ≥ 90% to unlock perf score
     │
     ▼
-[5] Performance timing       — candidate AND reference_tgt.py timed on same HW
-    (performance.py)           CUDA events, L2-flushed, 20 trials each
+[5] Performance timing  — candidate AND reference_tgt timed on same HW
+    performance.py        CUDA events, L2-flushed, 20 trials each
     │
     ▼
-[6] Utilization gate         — SOL_compute OR SOL_dram must exceed 2%
-    (antihack.py)              blocks suspected no-ops from receiving perf score
-    │
-    ▼
-Final score = correctness_rate × stress_pass_rate × SOL_tgt
+[6] Utilisation gate    — SOL_compute OR SOL_dram must exceed floor
+    antihack.py           blocks no-ops from receiving a perf score
+
+Final score = correctness_rate × stress_pass_rate × SOL
 ```
 
 ---
 
 ## Scoring
 
-| Component | Definition | Range |
+| Metric | Definition | Range |
 |---|---|---|
 | `correctness_rate` | Fraction of structured cases passing | {0, 1} (all-or-nothing gate) |
 | `stress_pass_rate` | Fraction of 30 stress trials passing | [0, 1] |
-| `sol_score` | `achieved_throughput / hw_peak` on target HW | [0, 1] physics-bounded |
+| `sol_score` | `achieved_throughput / hw_peak` | [0, 1] physics-bounded |
 | **`final_score`** | `correctness × stress × SOL` | [0, 1] |
 
-`speedup_vs_ref` (vs. handwritten `reference_tgt.py`) is displayed on the leaderboard as context but is **not** part of the gated score — it can be inflated by providing a slow reference.
-
-All metrics are reported individually:
-
-| Metric | Description |
-|---|---|
-| `correctness_rate` | Structured case pass rate |
-| `stress_pass_rate` | Stress trial pass rate |
-| `sol_score` | HW utilization fraction |
-| `speedup_vs_ref` | Runtime vs. handwritten reference |
-| `occupancy_pct` | GPU occupancy % |
-| `memory_ratio` | Peak memory vs. reference |
-| `fusion_ratio` | Kernel launches vs. reference |
-| `energy_ratio` | Energy vs. reference (NVIDIA only) |
-| `final_score` | Primary ranking key |
-
----
-
-## Problem Format
-
-Each problem lives in `problems/{problem_id}/`:
-
-```
-problems/softmax_h200_to_triton/
-├── meta.toml           # translation axis, tags, difficulty, tolerance overrides
-├── test_suite.toml     # structured case shapes + stress ranges
-├── generator.py        # make_inputs(shapes, dtype, rng, device) -> list[Tensor]
-├── source.py           # source kernel (src_dsl) — what the model must translate
-├── oracle.py           # ground-truth reference (PyTorch eager)
-├── reference_tgt.py    # handwritten reference in tgt_dsl — performance baseline
-├── notes.md            # human description and translation gotchas
-└── oracle_tensors/     # pre-stored oracle outputs (built by build_oracle_tensors.py)
-    ├── small.safetensors
-    └── manifest.json
-```
-
-### `meta.toml`
-
-```toml
-problem_id   = "softmax_h200_to_triton"
-name         = "Online Softmax (CUDA H200 → Triton H200)"
-src_dsl      = "cuda"
-src_hw       = "nvidia_h200_sxm"
-tgt_dsl      = "triton"
-tgt_hw       = "nvidia_h200_sxm"
-tags         = ["softmax", "reduction", "fp16"]
-difficulty   = 2          # 1–5
-
-[tolerances.fp16]         # override default; optional
-atol = 1e-2
-rtol = 1e-2
-```
-
-### `test_suite.toml`
-
-```toml
-# Fixed shapes, but VALUES are always freshly randomized — hardcoding fails.
-[[cases]]
-id    = "small"
-dtype = "fp16"
-[cases.shapes]
-N = 128
-D = 256
-
-[[cases]]
-id    = "nonpow2"
-dtype = "fp16"
-[cases.shapes]
-N = 1000
-D = 300
-
-# Stress: both shapes AND values are random — shape-specific hacks fail.
-[stress]
-num_trials     = 30
-pass_threshold = 0.90
-
-[stress.shape_ranges]
-N = [1, 4096]
-D = [1, 8192]
-```
-
-### `generator.py`
-
-```python
-import numpy as np
-import torch
-
-def make_inputs(shapes, dtype, rng, device):
-    # rng is np.random.Generator — use it for ALL randomness.
-    # Values differ every call; never hardcode them.
-    N, D = shapes["N"], shapes["D"]
-    x = torch.from_numpy(
-        rng.standard_normal((N, D)).astype("float32")
-    ).to(dtype={"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[dtype],
-         device=device)
-    return [x]
-```
-
-### Candidate interface
-
-Your submission must define `ModelNew` with a `forward` method:
-
-```python
-import torch
-import torch.nn as nn
-import triton
-import triton.language as tl
-
-@triton.jit
-def _kernel(x_ptr, y_ptr, N, D, BLOCK_D: tl.constexpr):
-    ...
-
-class ModelNew(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        ...
-        return y
-```
-
-Only `ModelNew().forward(*inputs)` is called by the grader. Helper functions and multiple compiled kernels are allowed internally.
-
----
-
-## Supported DSLs and Hardware
-
-### DSL Registry
-
-| DSL | Vendors | Load method |
-|---|---|---|
-| `cuda` | NVIDIA | `load_inline` |
-| `cute` | NVIDIA (Ampere+) | `load_inline` |
-| `triton` | NVIDIA, AMD | tempfile + JIT |
-| `tilelang` | NVIDIA | tempfile + JIT |
-| `helion` | NVIDIA | tempfile + JIT |
-| `hip` | AMD | `load_inline` |
-| `nki` | AWS Trainium | tempfile + JIT |
-| `pallas` | TPU | tempfile + JIT |
-| `numba` | NVIDIA, AMD | tempfile + JIT |
-| `mojo` | NVIDIA | tempfile + JIT |
-| `pytorch` | all | exec |
-
-### Hardware Registry (official eval fleet)
-
-| Key | Count | FP16 TFLOP/s | DRAM BW | Notes |
-|---|---|---|---|---|
-| `nvidia_h200_sxm` | up to 8 | 989 | 4800 GB/s | Primary target |
-| `nvidia_a100_sxm` | up to 2 | 312 | 2000 GB/s | Secondary |
-| `aws_trainium2` | TBD | 832 | 820 GB/s | NKI only |
-
----
-
-## Anti-Reward-Hacking Design
-
-| Exploit | Mechanism | KTBench fix |
-|---|---|---|
-| `torch.empty()` stale GPU memory | Allocator reuses memory containing prior reference output | Output buffer zeroed + pointer aliasing check before every comparison |
-| Hardcoded output values | Return fixed tensor regardless of input | Values freshly sampled from `rng` each call; different every run |
-| Shape-specific hack | Hardcode logic for one shape | 30 stress trials with randomly sampled shapes from `stress.shape_ranges` |
-| Speedup ratio gaming | Slow the baseline to inflate ratio | SOL = `achieved / hw_peak`; denominator is the hardware ceiling, not a runtime |
-| Grader monkey-patching | Patch timing or comparison functions | Candidate runs in isolated subprocess; grader namespace unreachable |
-| Stack introspection | Walk call stack to find pre-computed tensors | `inspect.stack`, `sys._getframe`, `ctypes` blocked by static checker |
-| `pkill` the evaluator | Kill the parent eval process | Subprocess started in new process group; SIGKILL kills the group, scored as failure |
-| Oracle file snooping | Read `oracle_tensors/` from filesystem | Static checker blocks direct path references; oracle tensors not mounted in candidate container |
-
----
-
-## Scripts Reference
-
-| Script | Purpose |
-|---|---|
-| `scripts/run_sweep.py` | Sweep multiple frontier models (OpenAI, Anthropic, Google, xAI) |
-| `scripts/run_agent.py` | Single model: single-shot or multi-turn tool-calling loop |
-| `scripts/run_eval.py` | Evaluate one candidate against one problem |
-| `scripts/add_problem.py` | Scaffold a new problem directory |
-| `scripts/build_oracle_tensors.py` | Pre-compute oracle outputs for structured cases |
-
-### `run_sweep.py`
-
-```
-python scripts/run_sweep.py --problems PATH [PATH ...] --models MODEL [MODEL ...] [options]
-
-  --problems    One or more problem directory paths
-  --models      One or more model strings (openai/o3, anthropic/claude-opus-4-7, …)
-
-  --device N         CUDA device index (default: 0)
-  --seed N           RNG seed (default: random)
-  --n-timing N       Timing trials per submission (default: 20)
-  --max-turns N      Message cap per session (default: 30)
-  --log-dir DIR      Inspect AI log dir (default: results/inspect_logs)
-  --out FILE         Write leaderboard JSON to FILE
-```
-
-Requires `pip install -e ".[inspect]"` and the relevant API keys in your environment.
-
-### `run_agent.py`
-
-```
-python scripts/run_agent.py --problem PATH --model MODEL [options]
-
-  --problem            Path to problem directory
-  --model              Model name, e.g. gpt-4o, o3, gpt-4.1, grok-3
-
-Provider (pick one preset or use --provider custom for full control):
-  --provider           openai (default) | azure | grok | custom
-  --api-key-env        Env var for API key (default per provider)
-  --base-url           API base URL (required for azure)
-  --api-kind           responses | chat  (default per provider)
-  --reasoning-effort   minimal | low | medium | high  (Responses API only)
-
-Mode:
-  --multi-turn         Multi-turn tool-calling loop (model calls compile/correct/submit)
-  --max-turns N        Max LLM turns in multi-turn mode (default: 10)
-  --tools NAMES        Comma-separated tool names (default: all)
-  --retries N          API retry budget per turn (default: 3)
-
-Output (single-shot):
-  --out FILE           Write candidate to FILE (default: print to stdout)
-  --eval               Run the full evaluator after generation
-
-Shared:
-  --device N           CUDA device index (default: 0)
-  --seed N             RNG seed
-  --n-timing N         Timing trials for evaluation (default: 20)
-  --json-out FILE      Write result JSON to FILE
-  --verbose
-```
-
-**Provider table:**
-
-| `--provider` | API key env var | API kind | Base URL |
-|---|---|---|---|
-| `openai` | `OPENAI_API_KEY` | Responses | (OpenAI default) |
-| `azure` | `AZURE_OPENAI_API_KEY` | Responses | required via `--base-url` |
-| `grok` | `XAI_API_KEY` | Chat | `https://api.x.ai/v1` |
-| `custom` | set via `--api-key-env` | set via `--api-kind` | set via `--base-url` |
-
-### `run_eval.py`
-
-```
-python scripts/run_eval.py --problem PATH --candidate FILE [options]
-
-  --problem     Path to problem directory
-  --candidate   Path to candidate .py file
-  --device      CUDA device index (default: 0)
-  --seed        Global RNG seed (default: random per run)
-  --n-timing    Number of timing trials (default: 20)
-  --verbose     Print pipeline stage output
-  --json-out    Write result JSON to file instead of stdout
-```
-
-### `add_problem.py`
-
-```
-python scripts/add_problem.py --id ID --src-dsl DSL --src-hw HW \
-                               --tgt-dsl DSL --tgt-hw HW [options]
-
-  --id           Problem identifier (used as directory name)
-  --src-dsl      Source DSL (cuda, triton, hip, ...)
-  --src-hw       Source hardware key (nvidia_h200_sxm, ...)
-  --tgt-dsl      Target DSL
-  --tgt-hw       Target hardware key
-  --name         Human-readable name
-  --tags         Comma-separated tags
-  --difficulty   1–5 (default: 2)
-  --problems-dir Base problems directory (default: problems/)
-```
-
-### `build_oracle_tensors.py`
-
-```
-python scripts/build_oracle_tensors.py --problem PATH [options]
-
-  --problem    Path to problem directory
-  --device     CUDA device index (default: 0)
-  --seed       Base RNG seed for oracle input generation
-  --overwrite  Regenerate even if tensors already exist
-```
+`speedup_vs_ref` is logged as context but is **not** part of the score — it can be inflated by a slow reference.
 
 ---
 
@@ -588,74 +335,59 @@ python scripts/build_oracle_tensors.py --problem PATH [options]
 
 ```
 KTBench/
-├── problems/                    # problem library
+├── configs/
+│   ├── eval_defaults.toml   — timing trials, stress config, antihack thresholds
+│   └── problems.toml        — all 18 problem definitions (metadata + test cases)
+│
+├── problems/                — one subdirectory per problem; code files only
 │   └── {problem_id}/
-│       ├── meta.toml
-│       ├── test_suite.toml
-│       ├── generator.py
-│       ├── source.py
-│       ├── oracle.py
-│       ├── reference_tgt.py
-│       ├── notes.md
-│       └── oracle_tensors/
-├── tools/                       # agent tool definitions (no KernelBench dependency)
-│   ├── __init__.py
-│   └── tools.py                 # Tool, ToolContext, ToolResult + 5 tool classes
+│       ├── source.py        — A100 kernel to translate
+│       ├── reference_tgt.py — H100 reference (performance baseline)
+│       ├── generator.py     — input tensor factory
+│       └── perf.py          — optional flops formula
+│
 ├── src/ktbench/
-│   ├── llm/
-│   │   ├── client.py            # make_client() — OpenAI / Azure / Grok
-│   │   ├── utils.py             # retry backoff, usage dict, code extraction
-│   │   └── agent.py             # TranslationAgent — single-shot + tool-calling loop
+│   ├── problem.py           — Problem dataclass + load_problem()
+│   ├── dataset.py           — load_all_problems() with filtering
+│   ├── prompt.py            — build_prompt()
+│   ├── score.py             — compute_final_score()
+│   ├── source_bundle.py     — collects .cu/.h companion files for prompt
 │   ├── registry/
-│   │   ├── hardware.py          # HW specs and SOL computation
-│   │   └── dsl.py               # DSL loading per backend
-│   ├── eval/
-│   │   ├── harness.py           # eval_translation() — top-level entry point
-│   │   ├── correctness.py       # randomized correctness suite
-│   │   ├── performance.py       # SOL timing, memory, launches, energy
-│   │   ├── antihack.py          # static checker, utilization gate
-│   │   └── isolation.py         # subprocess wrapper + watchdog
-│   ├── problem.py               # problem data models and TOML loading
-│   ├── dataset.py               # problem loading and filtering
-│   ├── prompt.py                # prompt construction (no shapes exposed)
-│   └── score.py                 # final score and leaderboard row
-├── integrations/                # harness adapters (install optional extras)
-│   ├── __init__.py              # shared fmt_result(), extract_final_score()
-│   └── inspect_ai.py            # Inspect AI task + multi-model eval (pip install .[inspect])
+│   │   ├── hardware.py      — A100/H100 specs, compute_sol()
+│   │   └── dsl.py           — CUDA model loading via exec()
+│   └── eval/
+│       ├── harness.py       — eval_translation() entry point
+│       ├── correctness.py   — structured cases + stress suite
+│       ├── performance.py   — SOL timing, DRAM BW measurement
+│       ├── antihack.py      — static checker, utilisation gate
+│       └── isolation.py     — subprocess wrapper + watchdog
+│
+├── tools/
+│   └── tools.py             — 5 agent tools (static_check, compile_kernel,
+│                              run_correctness, get_gpu_specs, submit_kernel)
+│
+├── integrations/
+│   ├── __init__.py          — shared fmt_result(), extract_final_score()
+│   └── inspect_ai.py        — Inspect AI task adapter (pip install .[inspect])
+│
 ├── scripts/
-│   ├── run_sweep.py             # frontier model sweep via Inspect AI
-│   ├── run_agent.py             # LLM → single-shot or multi-turn tool loop
-│   ├── run_eval.py
-│   ├── add_problem.py
-│   └── build_oracle_tensors.py
-└── configs/
-    └── eval_defaults.toml
+│   ├── run_eval.py          — evaluate one candidate vs one problem
+│   └── run_sweep.py         — multi-model sweep via Inspect AI
+│
+└── results/
+    └── sweep.json           — leaderboard output from run_sweep.py
 ```
 
-### Agent tools (`tools/tools.py`)
+---
 
-| Tool | Description |
+## Anti-Reward-Hacking
+
+| Exploit | KTBench defence |
 |---|---|
-| `static_check` | Detect reward-hacking patterns before GPU use |
-| `compile_kernel` | Try to compile ModelNew; return compiler errors |
-| `run_correctness` | Structured cases + stress suite (no timing) |
-| `get_gpu_specs` | Peak TFLOPS, DRAM BW, ridge point for the target HW |
-| `submit_kernel` | Full pipeline: correctness + stress + SOL timing + score |
-
-```python
-from tools.tools import get_tools, ToolContext
-from ktbench.problem import load_problem
-
-problem  = load_problem("problems/softmax_h200_to_triton")
-ctx      = ToolContext(problem=problem, device=0)
-tools    = get_tools()   # all 5 tools
-tool_map = {t.name: t for t in tools}
-
-# Compile a candidate
-result = tool_map["compile_kernel"].execute(ctx, kernel_code=src)
-print(result.output)
-
-# Check correctness
-result = tool_map["run_correctness"].execute(ctx, kernel_code=src)
-print(result.output)
-```
+| Hardcoded output values | Values freshly sampled from `rng` each call; never reproducible |
+| Shape-specific hacks | 30 stress trials with randomly sampled shapes from `shape_ranges` |
+| Speedup ratio gaming | SOL denominator is hardware peak, not a runtime |
+| `torch.empty()` stale memory | Output buffer zeroed before every comparison |
+| Stack introspection | `inspect.stack`, `sys._getframe`, `ctypes` blocked statically |
+| Grader monkey-patching | Candidate runs in isolated subprocess |
+| Oracle file snooping | Static checker blocks direct path references to `oracle_tensors` |

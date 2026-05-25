@@ -1,61 +1,32 @@
-"""
-Prompt construction.
-
-What IS in the prompt:
-  - Full source kernel (source.py text)
-  - Target DSL name + short hardware summary
-  - ModelNew interface signature (forward() argument names and dtypes)
-  - Semantic description from meta.toml
-  - Allowed libraries for the target DSL
-
-What is NOT in the prompt:
-  - Exact input shapes (these are in test_suite.toml, never passed to the model)
-  - Oracle outputs
-  - Stress case details
-  - Scoring internals
-"""
+"""Prompt construction for CUDA A100 → CUDA H100 translation tasks."""
 
 from __future__ import annotations
 
 from ktbench.problem import Problem
-from ktbench.registry.hardware import HardwareSpec, get_hw_spec
+from ktbench.source_bundle import collect_prompt_source_files, fence_language
 
-_HW_SUMMARIES: dict[str, str] = {
-    "nvidia_h200_sxm": (
-        "NVIDIA H200 SXM — GH100 Hopper die, 132 SMs, 4800 GB/s HBM3e, "
-        "989 TFLOP/s FP16 Tensor Core, 90 MB L2, 128 KB shared memory / SM, "
-        "warp size 32."
-    ),
-    "nvidia_a100_sxm": (
-        "NVIDIA A100 SXM — GA100 Ampere die, 108 SMs, 2000 GB/s HBM2e, "
-        "312 TFLOP/s FP16 Tensor Core, 40 MB L2, 164 KB shared memory / SM, "
-        "warp size 32. Supports async copy (cp.async) and TF32."
-    ),
-    "aws_trainium2": (
-        "AWS Trainium2 — 128 NeuronCores-v3, 832 TFLOP/s FP16, 820 GB/s HBM. "
-        "Use NKI (Neuron Kernel Interface) with @nki.jit for device kernels. "
-        "Scratchpad-based memory model; no global L2 cache."
-    ),
-    "amd_mi300x": (
-        "AMD Instinct MI300X — CDNA3, 304 CUs, 5300 GB/s HBM3, "
-        "1307 TFLOP/s FP16, 32 MB L2. Use HIP C++ or Triton. "
-        "Wavefront size 64."
-    ),
-}
+_H100_SUMMARY = (
+    "NVIDIA H100 SXM — GH100 Hopper die, 132 SMs, 3350 GB/s HBM3, "
+    "989 TFLOP/s BF16 Tensor Core, 50 MB L2, 228 KB shared memory / SM, "
+    "warp size 32.\n"
+    "KEY ARCHITECTURAL DIFFERENCES FROM A100 (you MUST use these for peak performance):\n"
+    "- WGMMA (Warpgroup MMA): replaces mma.sync. Operates on 4-warp warpgroups (128 threads). "
+    "Use wgmma.mma_async.sync.aligned PTX intrinsics (e.g. "
+    "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16). "
+    "Requires warpgroup-level sync: __syncwarp() is insufficient; use asm volatile('wgmma.fence.sync.aligned;') "
+    "and asm volatile('wgmma.commit_group.sync.aligned;') / wgmma.wait_group.\n"
+    "- TMA (Tensor Memory Accelerator): replaces cp.async for bulk shared-memory loads. "
+    "Create a CUtensorMap descriptor (cuTensorMapEncodeTiled) and use "
+    "cp.async.bulk.tensor.2d.shared::cluster.global / barrier to move tiles asynchronously. "
+    "Requires cuda.h / cuda_runtime.h and linking against libcuda (-lcuda).\n"
+    "- Compile target: must be sm_90a (not sm_90) to enable WGMMA and TMA PTX. "
+    "In load_inline use extra_cuda_cflags=[] (leave -arch out; set "
+    "TORCH_CUDA_ARCH_LIST=9.0a in the environment instead).\n"
+    "- Persistent kernels with Producer/Consumer warpgroups are the recommended pattern: "
+    "one warpgroup issues TMA loads; another issues WGMMA; coordinate via mbarrier."
+)
 
-_DSL_LIBRARIES: dict[str, str] = {
-    "cuda":    "torch.utils.cpp_extension.load_inline, custom __global__ kernels, cuBLAS, cuDNN.",
-    "cute":    "CuTe (CUTLASS 3.x): cute::Layout, cute::Tensor, cute::copy, cute::gemm.",
-    "triton":  "triton: @triton.jit, tl.load, tl.store, tl.dot, tl.math.*",
-    "tilelang":"tilelang: @T.prim_func, T.Kernel, T.alloc_shared, T.gemm.",
-    "helion":  "helion: @helion.kernel, hl.load, hl.store.",
-    "hip":     "HIP C++: __global__ kernels via torch.utils.cpp_extension (hipcc). HIP runtime API.",
-    "nki":     "NKI: @nki.jit, nl.load, nl.store, nl.matmul, nisa.*",
-    "pallas":  "JAX Pallas: pl.pallas_call, pl.load, pl.store.",
-    "numba":   "Numba CUDA: @numba.cuda.jit, cuda.shared.array, cuda.syncthreads.",
-    "mojo":    "Mojo: fn kernels with GPU intrinsics via max.gpu.*",
-    "pytorch": "PyTorch eager / torch.compile (any ops).",
-}
+_CUDA_LIBRARIES = "torch.utils.cpp_extension.load_inline, custom __global__ kernels, cuBLAS, cuDNN."
 
 _INTERFACE_NOTE = """\
 ## Interface Contract
@@ -75,47 +46,67 @@ correct algorithm for arbitrary valid inputs.
 
 
 def build_prompt(problem: Problem) -> str:
-    """
-    Build the model prompt for a translation problem.
-    Does NOT include input shapes, test case details, or oracle outputs.
-    """
+    """Build the model prompt for a CUDA A100 → CUDA H100 translation problem."""
     meta = problem.meta
-    hw_key = meta.tgt_hw
-    hw_summary = _HW_SUMMARIES.get(hw_key, f"Target hardware: {hw_key}")
-    dsl_libs = _DSL_LIBRARIES.get(meta.tgt_dsl, f"Target DSL: {meta.tgt_dsl}")
 
     lines = [
-        f"# Kernel Translation Task",
-        f"",
+        "# Kernel Translation Task",
+        "",
         f"**Problem:** {meta.name}",
-        f"**Source DSL:** `{meta.src_dsl}` on `{meta.src_hw}`",
-        f"**Target DSL:** `{meta.tgt_dsl}` on `{meta.tgt_hw}`",
+        f"**Source:** CUDA on NVIDIA A100 SXM",
+        f"**Target:** CUDA on NVIDIA H100 SXM",
         f"**Difficulty:** {meta.difficulty}/5",
         f"**Tags:** {', '.join(meta.tags)}",
-        f"",
-        f"## Target Hardware",
-        f"",
-        hw_summary,
-        f"",
-        f"## Allowed Libraries",
-        f"",
-        dsl_libs,
-        f"",
+        "",
+        "## Target Hardware",
+        "",
+        _H100_SUMMARY,
+        "",
+        "## Allowed Libraries",
+        "",
+        _CUDA_LIBRARIES,
+        "",
         _INTERFACE_NOTE,
-        f"## Source Kernel (`{meta.src_dsl}`)",
-        f"",
-        f"Translate the following kernel to `{meta.tgt_dsl}` for `{meta.tgt_hw}`:",
-        f"",
-        "```python",
-        problem.source_src.strip(),
-        "```",
-        f"",
-        f"## Your Translation (`{meta.tgt_dsl}`)",
-        f"",
-        f"Implement `ModelNew` below.",
+        "## Source Kernel (CUDA / A100)",
+        "",
+        "Translate the following kernel to CUDA for the H100:",
+        "",
+    ]
+
+    bundle = collect_prompt_source_files(problem.problem_dir)
+    if (problem.problem_dir / "source.py").exists():
+        lines.extend([
+            "### Harness interface (`source.py`)",
+            "",
+            "The grader calls `ModelNew().forward(*inputs)` as defined here. "
+            "Your optimized kernel must preserve this calling convention.",
+            "",
+            "```python",
+            problem.source_src.strip(),
+            "```",
+            "",
+        ])
+    if bundle:
+        lines.append("### Kernel source files")
+        lines.append("")
+        for fname, text in bundle:
+            lang = fence_language(fname)
+            lines.extend([f"#### `{fname}`", "", f"```{lang}", text.strip(), "```", ""])
+    elif not (problem.problem_dir / "source.py").exists():
+        lines.extend([
+            "```python",
+            problem.source_src.strip(),
+            "```",
+            "",
+        ])
+
+    lines.extend([
+        "## Your Translation (CUDA / H100)",
+        "",
+        "Implement `ModelNew` below.",
         "```python",
         "# Your implementation here",
         "```",
-    ]
+    ])
 
     return "\n".join(lines)
