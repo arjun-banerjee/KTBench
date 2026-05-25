@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KTBench leaderboard</title>
+  <link rel="stylesheet" href="https://use.typekit.net/bsk0vur.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header class="site">
+      <a class="wordmark" href="./">KTBench</a>
+      <nav>
+        <a href="./" class="active">leaderboard</a>
+        <a href="runs.html">runs</a>
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+      </nav>
+    </header>
+
+    <section class="prose">
+      <p>KTBench evaluates whether an LLM can translate a GPU kernel from one DSL and hardware target to another, correctly and efficiently. A run gives a model a working implementation in a source DSL (PyTorch, CUDA, Triton, NKI, ...) on a source GPU, and asks it to produce an equivalent implementation in a target DSL on a target GPU. The harness runs a six-stage pipeline against a diverse correctness suite and a randomised stress suite, then measures performance as a fraction of the target hardware's ceiling.</p>
+      <p>The leaderboard aggregates published runs by model. Success rate is the fraction of runs whose submission cleared the structured correctness gate plus the stress threshold. Mean final score is <code>correctness × stress_pass_rate × sol_score</code>, the headline KTBench number. Mean SOL is the Speed-of-Light fraction — <code>achieved_throughput / hw_peak</code> — bounded by physics rather than by a runtime baseline, so it cannot be inflated by slowing the reference. The second table breaks both down by translation axis (source DSL → target DSL). A held-out re-verification is not in the score itself; KTBench's anti-hack defence is the diverse + random-shape stress suite plus the utilization gate, and traces from each cell are linked from the runs index for direct inspection.</p>
+    </section>
+
+    <div class="filters" id="filters">
+      <label>src dsl
+        <select data-filter="src_dsl"><option value="">all</option></select>
+      </label>
+      <label>tgt dsl
+        <select data-filter="tgt_dsl"><option value="">all</option></select>
+      </label>
+      <label>persona
+        <select data-filter="persona"><option value="">all</option></select>
+      </label>
+      <label>scenario
+        <select data-filter="scenario"><option value="">all</option></select>
+      </label>
+    </div>
+
+    <div class="table-scroll">
+      <table class="data" id="by-model">
+        <caption>By model</caption>
+        <thead>
+          <tr>
+            <th data-sortable="true" data-key="model">model</th>
+            <th data-sortable="true" data-key="runs" class="numeric">runs</th>
+            <th data-sortable="true" data-key="success_rate" class="numeric">success rate</th>
+            <th data-sortable="true" data-key="mean_final" class="numeric">mean final</th>
+            <th data-sortable="true" data-key="mean_sol" class="numeric">mean SOL</th>
+            <th data-sortable="true" data-key="mean_speedup" class="numeric">mean speedup</th>
+            <th data-sortable="true" data-key="cost_gpu_seconds" class="numeric">gpu-seconds</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="table-scroll">
+      <table class="data" id="by-model-axis">
+        <caption>By model and translation axis</caption>
+        <thead>
+          <tr>
+            <th data-sortable="true" data-key="model">model</th>
+            <th>axis</th>
+            <th data-sortable="true" data-key="runs" class="numeric">runs</th>
+            <th data-sortable="true" data-key="success_rate" class="numeric">success rate</th>
+            <th data-sortable="true" data-key="mean_final" class="numeric">mean final</th>
+            <th data-sortable="true" data-key="mean_sol" class="numeric">mean SOL</th>
+            <th data-sortable="true" data-key="mean_speedup" class="numeric">mean speedup</th>
+            <th data-sortable="true" data-key="cost_gpu_seconds" class="numeric">gpu-seconds</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <section class="glossary">
+      <h2>Column glossary</h2>
+      <dl>
+        <dt><code>runs</code></dt>
+        <dd>Number of published submissions in the group. A submission is one (model x problem x persona x scenario shape) cell.</dd>
+
+        <dt><code>success rate</code></dt>
+        <dd>Fraction of runs whose final outcome was <code>passed</code> (correctness gate cleared, stress gate cleared, utilisation above the no-op floor). The remaining runs split between <code>failed</code> (a submission landed but a gate rejected it) and <code>incomplete</code> (the model exhausted its turn budget without calling <code>submit_kernel</code>).</dd>
+
+        <dt><code>final</code> / <code>mean final</code></dt>
+        <dd>The headline KTBench score: <code>correctness_rate &times; stress_pass_rate &times; sol_score</code>. Always in [0, 1]. A no-op kernel that passes a hardcoded structured suite scores ~0 because the stress suite and the SOL term zero it out. A correct, robust, hardware-saturating kernel approaches 1. The "mean final" column averages this across the runs in the group.</dd>
+
+        <dt><code>SOL</code> / <code>mean SOL</code></dt>
+        <dd>Speed-of-Light fraction: <code>max(achieved_throughput / hw_peak_throughput)</code> across the compute and memory axes. The hardware peak comes from the per-device entry in <code>src/ktbench/registry/hardware.py</code> (e.g. H100 SXM: 989 TFLOP/s FP16, 3350 GB/s DRAM). SOL is bounded by physics, not by a runtime baseline, so it cannot be inflated by slowing the reference. <code>mean SOL</code> is the arithmetic mean over the group.</dd>
+
+        <dt><code>speedup</code> / <code>mean speedup</code></dt>
+        <dd>Ratio of the candidate's mean runtime to the handwritten <code>reference_tgt.py</code> baseline on the same inputs. Reported but <em>not</em> part of the gated score because it can be inflated by shipping a slow reference. <code>mean speedup</code> is the <em>geometric</em> mean over the group so a single 100x outlier does not dominate.</dd>
+
+        <dt><code>gpu-seconds</code></dt>
+        <dd>Sum of accelerator wall-clock attributed to the runs in the group. Excludes scheduler idle time and LLM-side latency; counts only the eval pipeline's actual GPU work (compile, structured cases, stress, timing).</dd>
+
+        <dt><code>axis</code></dt>
+        <dd>Translation axis as <code>&lt;src_dsl&gt; → &lt;tgt_dsl&gt;</code>: the language the candidate translates from and to. Hardware (A100/H100/H200) is implied by the per-problem <code>meta.toml</code>.</dd>
+
+        <dt><code>outcome</code></dt>
+        <dd>Per-run terminal state. <code>passed</code> = submit landed with a non-zero final score; <code>failed</code> = submit landed but a gate (correctness, stress, utilisation) zeroed the score; <code>incomplete</code> = the agent never reached <code>submit_kernel</code> before the turn budget or scheduler quiescence stopped the run.</dd>
+      </dl>
+    </section>
+
+    <footer class="site">
+      <p>
+        <a href="runs.html">browse every published run</a>
+        &middot;
+        <a href="https://github.com/arjun-banerjee/KTBench">repo</a>
+        &middot;
+        <span id="generated-at" class="muted"></span>
+      </p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    KTBenchSite.renderLeaderboard();
+  </script>
+</body>
+</html>
