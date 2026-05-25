@@ -203,12 +203,27 @@ python scripts/run_sweep.py --help
 
 **API keys per provider:**
 
-| Model prefix | Env var |
-|---|---|
-| `openai/` | `OPENAI_API_KEY` |
-| `anthropic/` | `ANTHROPIC_API_KEY` |
-| `google/` | `GOOGLE_API_KEY` |
-| `xai/` | `XAI_API_KEY` |
+| Model prefix | Env var | Example model string |
+|---|---|---|
+| `openai/` | `OPENAI_API_KEY` | `openai/o3` |
+| `anthropic/` | `ANTHROPIC_API_KEY` | `anthropic/claude-opus-4-7` |
+| `google/` | `GOOGLE_API_KEY` | `google/gemini-2.5-pro` |
+| `xai/` | `XAI_API_KEY` | `xai/grok-3` |
+| `azureai/` | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` | `azureai/my-deployment` |
+
+**Azure OpenAI** — use the `azureai/` prefix with your deployment name (not model family name). The sweep script auto-detects Azure and disables the Responses API, falling back to Chat Completions:
+
+```bash
+AZURE_OPENAI_API_KEY=your-key \
+AZURE_OPENAI_BASE_URL=https://my-resource.openai.azure.com/ \
+python scripts/run_sweep.py \
+    --problems problems/softmax_a100_to_h100 \
+    --models azureai/my-deployment-name \
+    --device 0 \
+    --out results/sweep.json
+```
+
+You can also put credentials in `.env` at the repo root — the script loads it automatically.
 
 ### Use as a library
 
