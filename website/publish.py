@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -59,7 +60,10 @@ from pathlib import Path
 
 REPO = Path(__file__).parent.parent
 TRACES_DIR = REPO / "traces"
-WORKTREE_PATH = REPO / ".ghpages-worktree"
+WORKTREE_PATH = Path(
+    os.environ.get("GHPAGES_WORKTREE",
+                   str(REPO / ".ghpages-worktree"))
+)
 
 
 # ---------------------------------------------------------------------------

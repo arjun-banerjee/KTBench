@@ -1321,8 +1321,6 @@ name = "ktbench"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "ensemble" },
-    { name = "neuronx-cc" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "rich" },
@@ -1353,6 +1351,9 @@ langgraph = [
 llm = [
     { name = "openai" },
 ]
+nki = [
+    { name = "neuronx-cc" },
+]
 smolagents = [
     { name = "smolagents", extra = ["litellm"] },
 ]
@@ -1364,13 +1365,12 @@ triton = [
 requires-dist = [
     { name = "autogen-agentchat", marker = "extra == 'autogen'", specifier = ">=0.4" },
     { name = "autogen-ext", extras = ["openai"], marker = "extra == 'autogen'", specifier = ">=0.4" },
-    { name = "ensemble", directory = "../ensemble" },
     { name = "ensemble", marker = "extra == 'ensemble'", directory = "../ensemble" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = ">=0.3" },
     { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=0.3" },
     { name = "langchain-openai", marker = "extra == 'langgraph'", specifier = ">=0.2" },
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
-    { name = "neuronx-cc", specifier = ">=1.0.post1" },
+    { name = "neuronx-cc", marker = "extra == 'nki'", specifier = ">=1.0.post1" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", marker = "extra == 'llm'", specifier = ">=1.30" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -1383,7 +1383,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.3" },
     { name = "triton", marker = "extra == 'triton'", specifier = ">=2.3" },
 ]
-provides-extras = ["triton", "llm", "dev", "inspect", "ensemble", "langgraph", "smolagents", "autogen"]
+provides-extras = ["triton", "llm", "dev", "inspect", "ensemble", "nki", "langgraph", "smolagents", "autogen"]
 
 [[package]]
 name = "langchain-core"
