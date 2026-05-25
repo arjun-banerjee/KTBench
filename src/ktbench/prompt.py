@@ -50,7 +50,7 @@ def build_prompt(problem: Problem) -> str:
     meta = problem.meta
 
     lines = [
-        "# Kernel Translation Task",
+        "# Kernel Translation Task translates from CUDA to CUDA without using any Pytorch.",
         "",
         f"**Problem:** {meta.name}",
         f"**Source:** CUDA on NVIDIA A100 SXM",
@@ -69,7 +69,7 @@ def build_prompt(problem: Problem) -> str:
         _INTERFACE_NOTE,
         "## Source Kernel (CUDA / A100)",
         "",
-        "Translate the following kernel to CUDA for the H100:",
+        "Translate the following kernel to CUDA for the H100; optimize the CUDA, do not use pytorch. When you believe the kernel is fully optimized, call submit-kernel to finish.",
         "",
     ]
 
