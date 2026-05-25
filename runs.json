@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-25T00:19:48Z",
+  "generated_at": "2026-05-25T00:24:49Z",
   "runs": [
     {
       "slug": "glm__ktbench_gemm_triton_to_cuda_h100",
@@ -88,7 +88,7 @@
     {
       "slug": "glm__ktbench_rope_triton_to_cuda_h100",
       "timestamp": "2026-05-25T00:15:03Z",
-      "scenario": "ktbench_rope_triton_to_cuda_h100",
+      "scenario": "ktbench.rope_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
       "problem_id": "rope_triton_to_cuda_h100",
@@ -96,14 +96,21 @@
       "tgt_dsl": "cuda",
       "src_hw": "nvidia_a100_sxm",
       "tgt_hw": "nvidia_h100_sxm",
-      "outcome": "incomplete",
-      "final_score": null,
-      "sol_score": null,
-      "correctness_rate": null,
-      "stress_pass_rate": null,
-      "speedup_vs_ref": null,
+      "outcome": "passed",
+      "final_score": 0.3923,
+      "sol_score": 0.3923,
+      "correctness_rate": 1.0,
+      "stress_pass_rate": 1.0,
+      "speedup_vs_ref": 1.0768,
       "cost_gpu_seconds": 0.0,
-      "scores": {},
+      "scores": {
+        "submitted": 1.0,
+        "submit_passed": 1.0,
+        "correctness_passed": 1.0,
+        "stress_passed": 1.0,
+        "sol_above_threshold": 0.0,
+        "static_check_failed": 0.0
+      },
       "viewer_path": "glm__ktbench_rope_triton_to_cuda_h100/viewer.html"
     },
     {
