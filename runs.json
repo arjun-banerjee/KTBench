@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-25T00:24:49Z",
+  "generated_at": "2026-05-25T00:29:51Z",
   "runs": [
     {
       "slug": "glm__ktbench_gemm_triton_to_cuda_h100",
@@ -25,7 +25,7 @@
     {
       "slug": "glm__ktbench_gemv_triton_to_cuda_h100",
       "timestamp": "2026-05-25T00:15:03Z",
-      "scenario": "ktbench_gemv_triton_to_cuda_h100",
+      "scenario": "ktbench.gemv_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
       "problem_id": "gemv_triton_to_cuda_h100",
@@ -33,20 +33,27 @@
       "tgt_dsl": "cuda",
       "src_hw": "nvidia_a100_sxm",
       "tgt_hw": "nvidia_h100_sxm",
-      "outcome": "incomplete",
-      "final_score": null,
-      "sol_score": null,
-      "correctness_rate": null,
-      "stress_pass_rate": null,
-      "speedup_vs_ref": null,
+      "outcome": "passed",
+      "final_score": 0.3702,
+      "sol_score": 0.3702,
+      "correctness_rate": 1.0,
+      "stress_pass_rate": 1.0,
+      "speedup_vs_ref": 1.0429,
       "cost_gpu_seconds": 0.0,
-      "scores": {},
+      "scores": {
+        "submitted": 1.0,
+        "submit_passed": 1.0,
+        "correctness_passed": 1.0,
+        "stress_passed": 1.0,
+        "sol_above_threshold": 0.0,
+        "static_check_failed": 1.0
+      },
       "viewer_path": "glm__ktbench_gemv_triton_to_cuda_h100/viewer.html"
     },
     {
       "slug": "glm__ktbench_layer_norm_triton_to_cuda_h100",
       "timestamp": "2026-05-25T00:15:03Z",
-      "scenario": "ktbench_layer_norm_triton_to_cuda_h100",
+      "scenario": "ktbench.layer_norm_triton_to_cuda_h100",
       "model": "FW-GLM-5-1",
       "persona": "normal_translation",
       "problem_id": "layer_norm_triton_to_cuda_h100",
@@ -54,14 +61,21 @@
       "tgt_dsl": "cuda",
       "src_hw": "nvidia_a100_sxm",
       "tgt_hw": "nvidia_h100_sxm",
-      "outcome": "incomplete",
-      "final_score": null,
-      "sol_score": null,
-      "correctness_rate": null,
-      "stress_pass_rate": null,
-      "speedup_vs_ref": null,
+      "outcome": "passed",
+      "final_score": 0.4503,
+      "sol_score": 0.4503,
+      "correctness_rate": 1.0,
+      "stress_pass_rate": 1.0,
+      "speedup_vs_ref": 0.9068,
       "cost_gpu_seconds": 0.0,
-      "scores": {},
+      "scores": {
+        "submitted": 1.0,
+        "submit_passed": 1.0,
+        "correctness_passed": 1.0,
+        "stress_passed": 1.0,
+        "sol_above_threshold": 0.0,
+        "static_check_failed": 0.0
+      },
       "viewer_path": "glm__ktbench_layer_norm_triton_to_cuda_h100/viewer.html"
     },
     {
