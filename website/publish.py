@@ -231,6 +231,12 @@ def _ensure_worktree() -> Path:
             ["git", "worktree", "add", str(wt), "gh-pages"],
             cwd=REPO, check=True,
         )
+    # Restore any tracked files that are missing from the working tree
+    # (can happen if the worktree dir was deleted and re-created empty).
+    subprocess.run(
+        ["git", "checkout", "--", "."],
+        cwd=wt, check=False,
+    )
     return wt
 
 
